@@ -35,10 +35,7 @@ public class plugin : Plugin
         try
         {
             busy = true;
-            await Utils.RequestAnimDict("mini@cpr@char_b@cpr_def");
-            await Utils.RequestAnimDict("mini@cpr@char_a@cpr_def");
-            await Utils.RequestAnimDict("mini@cpr@char_b@cpr_str");
-            await Utils.RequestAnimDict("mini@cpr@char_a@cpr_str");
+            
             API.NetworkRequestControlOfEntity(ped.Handle);
             Game.PlayerPed.Task.ClearAll();
             if (cancel)
@@ -236,7 +233,6 @@ public class plugin : Plugin
         Game.PlayerPed.Task.ClearAll();
         ped.IsPositionFrozen = false;
         ped.Task.ClearAll();
-        Utils.ReleaseAnims();
         Utils.ReleaseEntity(ped);
         cancel = false;
         busy = false;
@@ -244,6 +240,10 @@ public class plugin : Plugin
 
     internal plugin()
     {
+        Utils.RequestAnimDict("mini@cpr@char_b@cpr_def");
+        Utils.RequestAnimDict("mini@cpr@char_a@cpr_def");
+        Utils.RequestAnimDict("mini@cpr@char_b@cpr_str");
+        Utils.RequestAnimDict("mini@cpr@char_a@cpr_str");
         Debug.WriteLine("^2Loaded FivePD CPR Script 1.0 by DevKilo!");
     }
 }
