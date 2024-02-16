@@ -5,103 +5,775 @@ using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Linq;
 using System.Net;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using CitizenFX.Core.Native;
 using CitizenFX.Core.NaturalMotion;
-using ERCallouts;
+using FivePD_CPR;
+using FivePD_HostageScenarioCallout;
 using FivePD.API;
+using Newtonsoft.Json.Converters;
 using Newtonsoft.Json.Linq;
 
-namespace ERCallouts
+namespace FivePD_HostageScenarioCallout
 {
-    internal class Utils
+    public class Utils
     {
-        public static Vector3 GetRandomLocationInRadius(int min, int max)
+        public static JObject config;
+        public static string SourceName = Assembly.GetExecutingAssembly().GetName().Name.Replace(".net", "");
+        public static JObject defaultConfig = JObject.Parse("{\"Keybind\": \"O\", \"CancelKeybind\": \"X\", \"MinigameEnabled\": false,\"MinigameCirclesAmount\": 6,\"MinigameTimelimitInSeconds\": 15,\"MinigameSuccessSurvivalChance\": 80,\"MinigameFailSurvivalChance\": 0}");
+        public static string kvpPrefix = SourceName + "_";
+        public class Config : JObject
         {
-            int distance = new Random().Next(min, max);
-            float offsetX = new Random().Next(-1 * distance, distance);
-            float offsetY = new Random().Next(-1 * distance, distance);
+            
+            public Config() : base(LoadConfig())
+            {
+                config = this;
+            }
 
+            public enum KVPType
+            {
+                String,
+                Float,
+                Int
+            }
 
-            return World.GetNextPositionOnStreet(Game.PlayerPed.GetOffsetPosition(new Vector3(offsetX, offsetY, 0)));
+            public bool Set(string key, KVPType type, string value)
+            {
+                bool res = false;
+                try
+                {
+                    switch (type)
+                    {
+                        case KVPType.String:
+                        {
+                            API.SetResourceKvp(key, value);
+                            this[key] = value;
+                            BaseScript.TriggerEvent("DevKilo.Commons::Update", SourceName, key, value);
+                            res = true;
+                            break;
+                        }
+                        case KVPType.Float:
+                        {
+                            float f = float.Parse(value);
+                            API.SetResourceKvpFloat(key, f);
+                            this[key] = f;
+                            BaseScript.TriggerEvent("DevKilo.Commons::Update", SourceName, key, f);
+                            res = true;
+                            break;
+                        }
+                        case KVPType.Int:
+                        {
+                            int i = int.Parse(value);
+                            API.SetResourceKvpInt(key, i);
+                            this[key] = i;
+                            BaseScript.TriggerEvent("DevKilo.Commons::Update", SourceName, key, i);
+                            res = true;
+                            break;
+                        }
+                        default:
+                        {
+                            API.SetResourceKvp(key, value);
+                            this[key] = value;
+                            BaseScript.TriggerEvent("DevKilo.Commons::Update", SourceName, key, value);
+                            res = true;
+                            break;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    res = false;
+                    Debug.WriteLine("^1An error occured while trying to set resource KVP:");
+                    Debug.WriteLine(ex.ToString());
+                }
+
+                return res;
+            }
+            
+            public JToken Get(string key, KVPType type)
+            {
+                JToken result;
+                switch (type)
+                {
+                    case KVPType.String:
+                    {
+                        result = API.GetResourceKvpString(key);
+                        break;
+                    }
+                    case KVPType.Float:
+                    {
+                        result = API.GetResourceKvpFloat(key);
+                        break;
+                    }
+                    case KVPType.Int:
+                    {
+                        result = API.GetResourceKvpInt(key);
+                        break;
+                    }
+                    default:
+                    {
+                        result = API.GetResourceKvpString(key);
+                        break;
+                    }
+                }
+
+                return result;
+            }
         }
-        public static async Task PedTaskLaptopHackAnimation(Ped ped, Vector3 runToPos, Vector3 explosionPos, Entity door)
+        public static JObject LoadConfig()
+        {
+            JObject config = Utils.defaultConfig; // Public static default config;
+            try
+            {
+                string data = API.LoadResourceFile("fivepd", "/plugins/CPR/config.json");
+                config = JObject.Parse(data);
+            }
+            catch (Exception ex)
+            {
+                var action = new Action( async () =>
+                {
+                    await BaseScript.Delay(5000);
+                    Debug.WriteLine(
+                        $"^1Couldn't find config. Expected path: fivepd/plugins/CPR/config.json \n^2Returning to saved config.");
+                });
+                action();
+            }
+
+            return config;
+        }
+
+        public static void ShowNotification(string text)
+        {
+            API.SetTextComponentFormat("STRING");
+            API.AddTextComponentString(text);
+            API.DisplayHelpTextFromStringLabel(0, false, true, -1);
+        }
+        
+        public static List<string> animDictsLoaded = new List<string>();
+        public static List<string> animSetsLoaded = new List<string>();
+
+        public static Prop GetClosestObjectToCoords(float x, float y, float z, float buffer = 0.2f,
+            string modelName = null)
+        {
+            Prop[] allProps = World.GetAllProps();
+            Prop closestProp = null;
+            foreach (var p in allProps)
+            {
+                if (p == null) continue;
+                if (modelName != null && p.Model.Hash != API.GetHashKey(modelName)) continue;
+                if (p.Position.DistanceTo(new Vector3(x, y, z)) < buffer) continue;
+                if (closestProp == null)
+                    closestProp = p;
+                if (p.Position.DistanceTo(new(x, y, z)) < closestProp.Position.DistanceTo(new(x, y, z)))
+                    closestProp = p;
+            }
+
+            return closestProp;
+        }
+
+        public static Vector2 decisionUIPos = new Vector2(0.8f, 0.8f);
+        public static List<string> displaying2DText = new List<string>();
+        public static bool displayingDecision = false;
+        public static bool selectEnabled = false;
+        public static int currentselected = -1;
+
+        public static void ClearDecisions()
+        {
+            displaying2DText.Clear();
+        }
+
+        public class DecisionInteraction
+        {
+            public bool IsActive = true;
+            private Dictionary<int, Action> connected = new Dictionary<int, Action>();
+            public DecisionInteraction(string[] choices)
+            {
+                if (!IsActive) return;
+                ShowInteractionDecision(choices);
+            }
+
+            public void Show()
+            {
+                displayingDecision = true;
+                List<string> lines = UpdateChoicesIndices(displaying2DText);
+                displaying2DText = lines;
+                HandleInteractButton();
+            }
+
+            public void Connect(int index, Action function)
+            {
+                if (!IsActive) return;
+                
+                if (!connected.ContainsKey(index))
+                {
+                    connected.Add(index, function);
+                }
+            }
+            
+
+            private async Task ShowInteractionDecision(string[] choices)
+            {
+                if (!IsActive) return;
+                ClearDecisions();
+                List<string> lines = ConvertChoicesIntoLines(choices);
+                foreach (var line in lines)
+                {
+                    displaying2DText.Add(line);
+                    Draw2DHandler(line);
+                }
+                displayingDecision = true;
+                HandleInteractButton();
+            }
+            private async Task HandleInteractButton()
+            {
+                while (displayingDecision)
+                {
+                    if (!IsActive) return;
+                    if (Game.IsControlJustReleased(0, Control.MpTextChatTeam))
+                    {
+                        if (!selectEnabled)
+                            currentselected = 0;
+                        selectEnabled = !selectEnabled;
+                        API.SetNuiFocusKeepInput(true);
+                        API.SetNuiFocus(selectEnabled, false);
+                        await BaseScript.Delay(100);
+                    }
+
+                    if (Game.IsControlJustReleased(0, Control.FrontendDown))
+                    {
+                        if (selectEnabled)
+                        {
+                            if ((displaying2DText.Count - 2) >= currentselected)
+                                currentselected++;
+                            else
+                                currentselected = 0;
+                            await BaseScript.Delay(100);
+                        }
+                    }
+
+                    if (Game.IsControlJustReleased(0, Control.FrontendUp))
+                    {
+                        if (selectEnabled)
+                        {
+                            if (currentselected <= 0)
+                                currentselected = displaying2DText.Count - 1;
+                            else
+                                currentselected--;    
+                        }
+                        await BaseScript.Delay(100);
+                    }
+
+                    if (Game.IsControlJustReleased(0, Control.FrontendEndscreenAccept))
+                    {
+                        if (selectEnabled)
+                        {
+                            displayingDecision = false;
+                            selectEnabled = false;
+                            API.SetNuiFocus(selectEnabled, false);
+                            connected[currentselected]();
+                            //Debug.WriteLine("Should be running");
+                        }
+                    }
+                
+                    await BaseScript.Delay(0);
+                }
+            }
+
+            public void Dispose()
+            {
+                IsActive = false;
+            }
+        }
+
+        
+        
+
+        public static async Task Remove2D(string text)
+        {
+            displaying2DText.Remove(text);
+        }
+        
+        public static async Task Draw2DHandler(string text)
+        {
+            Vector2 pos = decisionUIPos;
+            int index = displaying2DText.IndexOf(text);
+            if (text == "") return;
+            foreach (var s in displaying2DText)
+            {
+                int i = displaying2DText.IndexOf(s);
+                if (i < index)
+                    pos += new Vector2(0f, 0.03f);
+            }
+            
+            Draw2D(text, pos);
+        }
+        
+        public static async Task Draw2D(string text, Vector2 pos)
+        {
+            while (displaying2DText.Contains(text))
+            {
+                if (displayingDecision)
+                {
+                    API.SetTextScale(0f, 0.5f);
+                    API.SetTextFont(0);
+                    API.SetTextProportional(true);
+                    if (selectEnabled && currentselected == displaying2DText.IndexOf(text))
+                        API.SetTextColour(255, 255, 255, 255);
+                    else
+                        API.SetTextColour(255, 255, 255, 100);
+                
+                    API.SetTextDropshadow(0, 0, 0, 0, 255); 
+                    API.SetTextEdge(2, 0, 0, 0, 150);
+                    API.SetTextDropShadow();
+                    API.SetTextOutline();
+                    API.SetTextEntry("STRING");
+                    API.SetTextCentre(true);
+                    API.AddTextComponentString(text);
+                    API.DrawText(pos.X, pos.Y);   
+                }
+                await BaseScript.Delay(0);
+            }
+        }
+
+        public static List<string> UpdateChoicesIndices(List<string> choices)
+        {
+            List<string> newchoices = choices;
+            foreach (var choice in newchoices.ToArray())
+            {
+                int index = displaying2DText.IndexOf(choice);
+                string newchoice = choice.Replace("" + (index + 1).ToString() + ")", "").Trim();
+                newchoices[index] = newchoices.IndexOf(choice) + ") " + newchoice;
+            }
+
+            return newchoices;
+        }
+
+        public static List<string> ConvertChoicesIntoLines(string[] choices)
+        {
+            List<string> lines = new List<string>();
+            int i = 0;
+            foreach (var choice in choices)
+            {
+                i++;
+                lines.Add(""+i+") "+choice);
+            }
+
+            return lines;
+        }
+
+        public static async Task WaitUntilKeypressed(Control key)
+        {
+            while (true)
+            {
+                if (Game.IsControlJustReleased(0, key))
+                    return;
+                await BaseScript.Delay(0);
+            }
+        }
+
+        public static List<string> Text3DInProgress = new List<string>();
+
+        public static void ImmediatelyStop3DText()
+        {
+            Text3DInProgress.Clear();
+        }
+
+        public static void Draw3DText(Vector3 pos, string text, float scaleFactor = 0.5f,
+            int duration = 5000, int red = 255, int green = 255, int blue = 255, int opacity = 150)
+        {
+            Text3DInProgress.Add(text);
+            Draw3DTextHandler(pos, scaleFactor, text, duration, red, green, blue, opacity);
+        }
+
+        public static async Task Draw3DTextHandler(Vector3 pos, float scaleFactor, string text, int duration,
+            int red, int green, int blue, int opacity)
+        {
+            Draw3DTextDrawer(pos, scaleFactor, text, red, green, blue, opacity);
+            await BaseScript.Delay(duration);
+            if (Text3DInProgress.Contains(text))
+                Text3DInProgress.Remove(text);
+        }
+
+        public static async Task Draw3DTextDrawer(Vector3 pos, float scaleFactor, string text, int red, int green,
+            int blue, int opacity)
+        {
+            while (Text3DInProgress.Contains(text))
+            {
+                float screenY = 0f;
+                float screenX = 0f;
+                bool result = API.World3dToScreen2d(pos.X, pos.Y, pos.Z, ref screenX, ref screenY);
+                Vector3 p = API.GetGameplayCamCoords();
+                float dist = World.GetDistance(p, pos);
+                float scale = (1 / dist) * 2;
+                float fov = (1 / API.GetGameplayCamFov()) * 100;
+                scale = scale * fov * scaleFactor;
+                if (!result) return;
+                API.SetTextScale(0f, scale);
+                API.SetTextFont(0);
+                API.SetTextProportional(true);
+                API.SetTextColour(red, green, blue, opacity);
+                API.SetTextDropshadow(0, 0, 0, 0, 255);
+                API.SetTextEdge(2, 0, 0, 0, 150);
+                API.SetTextDropShadow();
+                API.SetTextOutline();
+                API.SetTextEntry("STRING");
+                API.SetTextCentre(true);
+                API.AddTextComponentString(text);
+                API.DrawText(screenX, screenY);
+                await BaseScript.Delay(0);
+            }
+            
+        }
+
+
+        public static async Task WaitUntilPedCanSeePed(Ped ped1, Ped ped2, int bufferms = 1000)
+        {
+            while (!API.HasEntityClearLosToEntityInFront(ped1.Handle,ped2.Handle))
+                await BaseScript.Delay(bufferms);
+        }
+
+        public static Ped GetClosestPed(Vector3 pos, float maxDistance = 20f, bool ignoreVehicles = false, bool ignoreAlive = false)
+        {
+            Ped[] allPeds = World.GetAllPeds();
+            Ped closest = null;
+            foreach (var p in allPeds)
+            {
+                if (p == null || !p.Exists()) continue;
+                if (p.Position.DistanceTo(pos) > maxDistance) continue;
+                if (ignoreVehicles && p.IsInVehicle()) continue;
+                if (p.NetworkId == Game.PlayerPed.NetworkId) continue;
+                if (ignoreAlive && !p.IsDead) continue;
+                if (closest == null)
+                    closest = p;
+                if (p.Position.DistanceTo(pos) < closest.Position.DistanceTo(pos))
+                    closest = p;
+            }
+
+            return closest;
+        }
+
+        public static async Task PedTaskLaptopHackAnimation(Ped ped, int duration = 10000)
         {
             Ped hacker = ped;
-            Debug.WriteLine("gotocheck1");
-            hacker.Task.RunTo(runToPos);
-            Debug.WriteLine("gotocheck2");
+            /*hacker.Task.RunTo(runToPos);
             KeepTaskGoToForPed(hacker, runToPos, 1f);
-            Debug.WriteLine("gotocheck3");
             await WaitUntilEntityIsAtPos(hacker, runToPos, 1f);
-            Debug.WriteLine("gotocheck4");
             hacker.Task.AchieveHeading(249.7f);
-            await BaseScript.Delay(750);
-Debug.WriteLine("After goto");
-            int bagscene = Function.Call<int>(Hash.NETWORK_CREATE_SYNCHRONISED_SCENE, runToPos.X - 0.5f, runToPos.Y, runToPos.Z + 0.4f, hacker.Rotation.X, hacker.Rotation.Y, hacker.Rotation.Z, 2, false, false, 1065353216, 0, 1.3);
-            int bag = Function.Call<int>(Hash.CREATE_OBJECT, Function.Call<uint>(Hash.GET_HASH_KEY, "hei_p_m_bag_var22_arm_s"), hacker.Position.X, hacker.Position.Y, hacker.Position.Z + 0.2, true, true, false);
-            Debug.WriteLine("After bag");
+            await BaseScript.Delay(750);*/
+
+            int bagscene = Function.Call<int>(Hash.NETWORK_CREATE_SYNCHRONISED_SCENE, hacker.Position.X - 0.5f,
+                hacker.Position.Y, hacker.Position.Z + 0.4f, hacker.Rotation.X, hacker.Rotation.Y, hacker.Rotation.Z, 2,
+                false, false, 1065353216, 0, 1.3);
+            int bag = Function.Call<int>(Hash.CREATE_OBJECT,
+                Function.Call<uint>(Hash.GET_HASH_KEY, "hei_p_m_bag_var22_arm_s"), hacker.Position.X, hacker.Position.Y,
+                hacker.Position.Z + 0.2, true, true, false);
             Function.Call(Hash.SET_ENTITY_COLLISION, bag, false, true);
-            Debug.WriteLine("After bag collision");
             Entity bagentity = Entity.FromHandle(bag);
-            
-            int laptop = Function.Call<int>(Hash.CREATE_OBJECT, Function.Call<uint>(Hash.GET_HASH_KEY, "hei_prop_hst_laptop"), hacker.Position.X, hacker.Position.Y, hacker.Position.Z + 0.2, true, true, true);
-            Debug.WriteLine("After thermite");
+
+            int laptop = Function.Call<int>(Hash.CREATE_OBJECT,
+                Function.Call<uint>(Hash.GET_HASH_KEY, "hei_prop_hst_laptop"), hacker.Position.X, hacker.Position.Y,
+                hacker.Position.Z + 0.2, true, true, true);
             Entity thermiteEntity = Entity.FromHandle(laptop);
             Function.Call(Hash.SET_ENTITY_COLLISION, laptop, false, true);
 
-            Function.Call(Hash.NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE, hacker, bagscene, "anim@heists@ornate_bank@hack", "hack_enter", 1.5, -4.0, 1, 16, 1148846080, 0);
-            Function.Call(Hash.NETWORK_ADD_ENTITY_TO_SYNCHRONISED_SCENE, bag, bagscene, "anim@heists@ornate_bank@hack", "hack_enter_bag", 4.0, -8.0, 1);
-            Function.Call(Hash.NETWORK_ADD_ENTITY_TO_SYNCHRONISED_SCENE, laptop, bagscene, "anim@heists@ornate_bank@hack", "hack_enter_laptop", 4.0, -8.0, 1);
+            Function.Call(Hash.NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE, hacker, bagscene, "anim@heists@ornate_bank@hack",
+                "hack_enter", 1.5, -4.0, 1, 16, 1148846080, 0);
+            Function.Call(Hash.NETWORK_ADD_ENTITY_TO_SYNCHRONISED_SCENE, bag, bagscene, "anim@heists@ornate_bank@hack",
+                "hack_enter_bag", 4.0, -8.0, 1);
+            Function.Call(Hash.NETWORK_ADD_ENTITY_TO_SYNCHRONISED_SCENE, laptop, bagscene,
+                "anim@heists@ornate_bank@hack", "hack_enter_laptop", 4.0, -8.0, 1);
             Function.Call(Hash.SET_PED_COMPONENT_VARIATION, hacker, 5, 0, 0, 0);
             Function.Call(Hash.NETWORK_START_SYNCHRONISED_SCENE, bagscene);
             await BaseScript.Delay(6000);
             Function.Call(Hash.NETWORK_STOP_SYNCHRONISED_SCENE, bagscene);
 
-            int hackscene = Function.Call<int>(Hash.NETWORK_CREATE_SYNCHRONISED_SCENE, runToPos.X - 0.5f,runToPos.Y,runToPos.Z + 0.4f,hacker.Rotation.X,hacker.Rotation.Y,hacker.Rotation.Z,2,false,true, 1065353216,0,1);
-            Function.Call(Hash.NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE, hacker, hackscene, "anim@heists@ornate_bank@hack", "hack_loop", 0, 0, 1, 16, 1148846080, 0);
-            Function.Call(Hash.NETWORK_ADD_ENTITY_TO_SYNCHRONISED_SCENE, bag, hackscene, "anim@heists@ornate_bank@hack", "hack_loop_bag", 4.0, -8.0, 1);
-            Function.Call(Hash.NETWORK_ADD_ENTITY_TO_SYNCHRONISED_SCENE, laptop, hackscene, "anim@heists@ornate_bank@hack", "hack_loop_laptop", 1.0, -0.0, 1);
+            int hackscene = Function.Call<int>(Hash.NETWORK_CREATE_SYNCHRONISED_SCENE, hacker.Position.X - 0.5f,
+                hacker.Position.Y, hacker.Position.Z + 0.4f, hacker.Rotation.X, hacker.Rotation.Y, hacker.Rotation.Z, 2,
+                false, true, 1065353216, 0, 1);
+            Function.Call(Hash.NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE, hacker, hackscene, "anim@heists@ornate_bank@hack",
+                "hack_loop", 0, 0, 1, 16, 1148846080, 0);
+            Function.Call(Hash.NETWORK_ADD_ENTITY_TO_SYNCHRONISED_SCENE, bag, hackscene, "anim@heists@ornate_bank@hack",
+                "hack_loop_bag", 4.0, -8.0, 1);
+            Function.Call(Hash.NETWORK_ADD_ENTITY_TO_SYNCHRONISED_SCENE, laptop, hackscene,
+                "anim@heists@ornate_bank@hack", "hack_loop_laptop", 1.0, -0.0, 1);
             Function.Call(Hash.NETWORK_START_SYNCHRONISED_SCENE, hackscene);
-            await BaseScript.Delay(10000);
+            await BaseScript.Delay(duration);
             Function.Call(Hash.NETWORK_STOP_SYNCHRONISED_SCENE, hackscene);
 
-            int hackexit = Function.Call<int>(Hash.NETWORK_CREATE_SYNCHRONISED_SCENE, runToPos.X - 0.5f, runToPos.Y, runToPos.Z + 0.4f, hacker.Rotation.X, hacker.Rotation.Y, hacker.Rotation.Z, 2, false, false, 1065353216, -1, 1.3);
-            Function.Call(Hash.NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE, hacker, hackexit, "anim@heists@ornate_bank@hack", "hack_exit", 0, 0, -1, 16, 1148846080, 0);
-            Function.Call(Hash.NETWORK_ADD_ENTITY_TO_SYNCHRONISED_SCENE, bag, hackexit, "anim@heists@ornate_bank@hack", "hack_exit_bag", 4.0, -8.0, 1);
-            Function.Call(Hash.NETWORK_ADD_ENTITY_TO_SYNCHRONISED_SCENE, laptop, hackexit, "anim@heists@ornate_bank@hack", "hack_exit_laptop", 4.0, -8.0, 1);
+            int hackexit = Function.Call<int>(Hash.NETWORK_CREATE_SYNCHRONISED_SCENE, hacker.Position.X - 0.5f,
+                hacker.Position.Y, hacker.Position.Z + 0.4f, hacker.Rotation.X, hacker.Rotation.Y, hacker.Rotation.Z, 2,
+                false, false, 1065353216, -1, 1.3);
+            Function.Call(Hash.NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE, hacker, hackexit, "anim@heists@ornate_bank@hack",
+                "hack_exit", 0, 0, -1, 16, 1148846080, 0);
+            Function.Call(Hash.NETWORK_ADD_ENTITY_TO_SYNCHRONISED_SCENE, bag, hackexit, "anim@heists@ornate_bank@hack",
+                "hack_exit_bag", 4.0, -8.0, 1);
+            Function.Call(Hash.NETWORK_ADD_ENTITY_TO_SYNCHRONISED_SCENE, laptop, hackexit,
+                "anim@heists@ornate_bank@hack", "hack_exit_laptop", 4.0, -8.0, 1);
             Function.Call(Hash.NETWORK_START_SYNCHRONISED_SCENE, hackexit);
             await BaseScript.Delay(6000);
             Function.Call(Hash.NETWORK_STOP_SYNCHRONISED_SCENE, hackexit);
             bagentity.Delete();
             Entity laptope = Entity.FromHandle(laptop);
             laptope.Delete();
-            Entity vaultdoor = door;
-            vaultdoor.IsPositionFrozen = false;
-            Function.Call(Hash.ADD_EXPLOSION, explosionPos.X,explosionPos.Y,explosionPos.Z, 2, 0.5f, false, false, 0f, true);
-            await BaseScript.Delay(1000);
-            
-            vaultdoor.IsPositionFrozen = true;
         }
+
+        public static void CalloutError(Exception err, Callout callout)
+        {
+            try
+            {
+                //Debug.WriteLine("^3=================^Kilo's CPR Plugin [FivePD]^3=================");
+                //Debug.WriteLine("^8ERROR DETECTED^7: " + err.Message);
+                //Debug.WriteLine("^3=================^2Kilo' CPR Plugin [FivePD]^3=================");
+                //Debug.WriteLine("^5Callout Ended");
+                try
+                {
+                    if ((bool)config["AnonymousErrorReporting"])
+                    {
+                        //BaseScript.TriggerServerEvent("247Robbery::ErrorToWebhook",
+                          //  "Error in 247Robbery Callout: \n" + err.ToString());
+                    }
+                }
+                catch (Exception err2)
+                {
+                    // Do nothing
+                }
+
+                if (animDictsLoaded.Count > 0)
+                    foreach (var s in animDictsLoaded)
+                    {
+                        Utils.UnloadAnimDict(s);
+                    }
+
+                if (animSetsLoaded.Count > 0)
+                    foreach (var s in animSetsLoaded)
+                    {
+                        Utils.UnloadAnimSet(s);
+                    }
+
+                callout.EndCallout();
+            }
+            catch (Exception err2)
+            {
+                // Do nothing
+            }
+        }
+
+        public static async Task TaskPedTakeTargetPedHostage(Ped ped, Ped targetPed)
+        {
+            // Define parameters
+            string suspectAnimDict = "anim@gangops@hostage@";
+            string suspectAnimSet = "perp_idle";
+            string victimAnimDict = suspectAnimDict;
+            string victimAnimSet = "victim_idle";
+            // Request memory resources
+            await RequestAnimDict(suspectAnimDict);
+            await RequestAnimDict(victimAnimDict);
+            RequestAnimSet(suspectAnimSet);
+            RequestAnimSet(victimAnimSet);
+            //Debug.WriteLine("After await anims");
+            // Code
+            if (ped == null)
+                //Debug.WriteLine("Ped is null");
+            if (targetPed == null)
+                //Debug.WriteLine("Target is null");
+            ped.Task.ClearSecondary();
+            ped.Detach();
+
+            API.AttachEntityToEntity(targetPed.Handle, ped.Handle, 0, -0.24f, 0.11f, 0f, 0.5f, 0.5f, 0f, false, false,
+                false, false, 2, false);
+            ped.Task.PlayAnimation(suspectAnimDict, suspectAnimSet, 8f, -8f, -1, AnimationFlags.Loop, 1f);
+            targetPed.Task.PlayAnimation(victimAnimDict, victimAnimSet, 8f, -8f, -1, AnimationFlags.Loop, 1f);
+        }
+
+        public static void ReleaseAnims()
+        {
+            foreach (var s in animDictsLoaded)
+            {
+                API.RemoveAnimDict(s);
+            }
+        }
+
+
+        public static async Task RequestAnimDict(string animDict)
+        {
+            if (!API.HasAnimDictLoaded(animDict))
+                API.RequestAnimDict(animDict);
+            while (!API.HasAnimDictLoaded(animDict))
+                await BaseScript.Delay(100);
+            if (!animDictsLoaded.Contains(animDict))
+                animDictsLoaded.Add(animDict);
+        }
+
+        public static async Task RequestAnimSet(string animSet)
+        {
+            if (!API.HasAnimSetLoaded(animSet))
+                API.RequestAnimSet(animSet);
+            while (!API.HasAnimSetLoaded(animSet))
+                await BaseScript.Delay(100);
+            if (!animSetsLoaded.Contains(animSet))
+                animSetsLoaded.Add(animSet);
+        }
+
+        public static void UnloadAnimDict(string animDict)
+        {
+            API.RemoveAnimDict(animDict);
+            animDictsLoaded.Remove(animDict);
+        }
+
+        public static void UnloadAnimSet(string animSet)
+        {
+            API.RemoveAnimSet(animSet);
+            animSetsLoaded.Remove(animSet);
+        }
+
+        public static List<Entity> EntitiesInMemory = new List<Entity>();
+
+        public static async Task<Ped> SpawnPedOneSync(PedHash pedHash, Vector3 location, [Optional] bool keepTask,
+            [Optional] float heading)
+        {
+            Ped ped = await World.CreatePed(new(pedHash), location, heading);
+            ped.IsPersistent = true;
+            EntitiesInMemory.Add(ped);
+            if (keepTask)
+            {
+                ped.AlwaysKeepTask = true;
+                ped.BlockPermanentEvents = true;
+            }
+
+            return ped;
+        }
+
+        public static async Task<Vehicle> SpawnVehicleOneSync(VehicleHash vehicleHash, Vector3 location,
+            float heading = 0f)
+        {
+            Vehicle veh = await World.CreateVehicle(new(vehicleHash), location, heading);
+            if (veh == null) return null;
+            veh.IsPersistent = true;
+            EntitiesInMemory.Add(veh);
+            return veh;
+        }
+
+        public static void ReleaseEntity(Entity ent)
+        {
+            if (EntitiesInMemory.Contains(ent))
+            {
+                if (ent.Model.IsPed)
+                {
+                    Ped ped = (Ped)ent;
+                    ped.AlwaysKeepTask = false;
+                    ped.BlockPermanentEvents = false;
+                }
+                ent.IsPersistent = false;
+                EntitiesInMemory.Remove(ent);
+            }
+        }
+
+        public static Vector4 GetRandomLocationFromArray(Array array)
+        {
+            var chance = new Random().Next(array.Length);
+            var result = array.GetValue(chance);
+            return (Vector4)result;
+        }
+
+        public static List<Vector4> GetLocationArrayFromJArray(JArray jObject, string name)
+        {
+            List<Vector4> locationArray = new List<Vector4>();
+            var locationsObject = (JArray)jObject;
+            foreach (JObject jToken in locationsObject)
+            {
+                locationArray.Add(JSONCoordsToVector4((JObject)jToken[name]));
+            }
+
+            return locationArray;
+        }
+
+        public static JObject GetChildFromParent(JToken parent, string name)
+        {
+            return (JObject)parent[name];
+        }
+
+        /*public static JObject GetConfig()
+        {
+            JObject result = null;
+            try
+            {
+                string data = API.LoadResourceFile("fivepd", "callouts/Kilo247Robbery/settings.json");
+                result = JObject.Parse(data);
+            }
+            catch (Exception err)
+            {
+                Debug.WriteLine(
+                    "^8ERROR^7: ^3Please add the following line into the 'files' section of your fivepd fxmanifest.lua:");
+                Debug.WriteLine(
+                    "^1===================================================================================================");
+                Debug.WriteLine("^9'callouts/Kilo247Robbery/*.json'");
+                Debug.WriteLine(
+                    "^1===================================================================================================");
+                Debug.WriteLine(
+                    "^8ERROR (Kilo's 24/7 Robbery Callout)^7: ^2 The above line will allow the callout to read the json files here in the callout folder!");
+            }
+
+            return result;
+        }*/
+
+        public static Vector3 GetRandomLocationInRadius(Vector3 pos, int min, int max, bool isPed = true)
+        {
+            int distance = new Random().Next(min, max);
+            float offsetX = new Random().Next(-1 * distance, distance);
+            float offsetY = new Random().Next(-1 * distance, distance);
+            if (isPed)
+                return World.GetNextPositionOnSidewalk(pos.ApplyOffset(new Vector3(offsetX, offsetY, 0)));
+            else
+                return World.GetNextPositionOnStreet(pos.ApplyOffset(new Vector3(offsetX, offsetY, 0)));
+        }
+
         public static async Task PedTaskSassyChatAnimation(Ped ped)
         {
             if (!API.HasAnimDictLoaded("oddjobs@assassinate@vice@hooker"))
                 API.RequestAnimDict("oddjobs@assassinate@vice@hooker");
-            Debug.WriteLine("Requesting anim dict");
+            ////Debug.WriteLine("Requesting anim dict");
             if (!API.HasAnimSetLoaded("argue_b"))
                 API.RequestAnimSet("argue_b");
-            Debug.WriteLine("Requesting anim set");
+            ////Debug.WriteLine("Requesting anim set");
             while (!API.HasAnimDictLoaded("oddjobs@assassinate@vice@hooker"))
                 await BaseScript.Delay(200);
-            Debug.WriteLine("Loaded anim dict");
-            
-            Debug.WriteLine("Loaded anim set");
-            Debug.WriteLine("after waiting load");
+            ////Debug.WriteLine("Loaded anim dict");
+
+            ////Debug.WriteLine("Loaded anim set");
+            ////Debug.WriteLine("after waiting load");
             ped.Task.ClearAllImmediately();
             ped.Task.PlayAnimation("oddjobs@assassinate@vice@hooker", "argue_b", 8f, 8f, 10000, AnimationFlags.Loop,
                 1f);
+        }
+
+        public static async Task<Blip> CreateLocationBlip(Vector3 pos, float radius = 5f, bool showRoute = true, BlipColor color = BlipColor.Yellow,
+            BlipSprite sprite = BlipSprite.BigCircle,string name = "", bool isRadius = true, bool attachToEntity = false, Entity entityToAttachTo = null, bool isFlashing = false)
+        {
+            Blip blip;
+            if (!attachToEntity)
+            {
+                blip = isRadius ? World.CreateBlip(pos, radius) : World.CreateBlip(pos);
+            }
+            else
+            {
+                if (entityToAttachTo == null) return null;
+                blip = entityToAttachTo.AttachBlip();
+            }
+            //Debug.WriteLine(color.ToString());
+            blip.Sprite = sprite;
+            blip.Name = name;
+            blip.IsFlashing = isFlashing;
+            blip.Color = color;
+            blip.ShowRoute = showRoute;
+            blip.Alpha = 80;
+            
+            //Debug.WriteLine(blip.Color.ToString());
+            
+            return blip;
         }
 
         public static async Task KeepTaskEnterVehicle(Ped ped, Vehicle veh, VehicleSeat targetSeat)
@@ -117,36 +789,26 @@ Debug.WriteLine("After goto");
             }
         }
 
-        public static async Task WaitUntilPedIsInVehicle(Ped ped, Vehicle veh, VehicleSeat targetSeat)
+        public static async Task WaitUntilPedIsInVehicle(Ped ped, Vehicle veh, [Optional] VehicleSeat targetSeat)
         {
-            while (true)
+            if (targetSeat != null)
             {
-                if (ped.IsInVehicle(veh) || ped.IsInVehicle() && ped.SeatIndex == targetSeat)
-                    return;
-                await BaseScript.Delay(500);
+                while (true)
+                {
+                    if (ped.IsInVehicle(veh) || ped.IsInVehicle() && ped.SeatIndex == targetSeat)
+                        return;
+                    await BaseScript.Delay(500);
+                }
             }
-            //
-        }
-
-        public static async Task RequestAnimDict(string animDict)
-        {
-            API.RequestAnimDict(animDict);
-            while (!API.HasAnimDictLoaded(animDict))
-                await BaseScript.Delay(100);
-        }
-
-        public static async Task<Ped> SpawnPedOneSync(PedHash pedHash, Vector4 pos)
-        {
-            Ped ped = await World.CreatePed(pedHash, (Vector3)pos, pos.W);
-            ped.IsPersistent = true;
-            return ped;
-        }
-
-        public static async Task<Vehicle> SpawnVehicleOneSync(VehicleHash vehicleHash, Vector4 pos)
-        {
-            Vehicle veh = await World.CreateVehicle(new(vehicleHash), (Vector3)pos, pos.W);
-            veh.IsPersistent = true;
-            return veh;
+            else
+            {
+                while (true)
+                {
+                    if (ped.IsInVehicle(veh))
+                        return;
+                    await BaseScript.Delay(500);
+                }
+            }
         }
 
         public static async Task SetIntoVehicleAfterTimer(Ped ped, Vehicle veh, VehicleSeat targetSeat, int ms)
@@ -157,11 +819,12 @@ Debug.WriteLine("After goto");
                 ped.SetIntoVehicle(veh, targetSeat);
             }
         }
+
         public static async Task KeepTaskGoToForPed(Ped ped, Vector3 pos, float buffer)
         {
+            Vector3 startPos = ped.Position;
             while (true)
             {
-                Vector3 startPos = ped.Position;
                 await BaseScript.Delay(1000);
                 if (ped.Position == startPos)
                 {
@@ -173,6 +836,7 @@ Debug.WriteLine("After goto");
                 await BaseScript.Delay(1000);
             }
         }
+
         public static async Task WaitUntilEntityIsAtPos(Entity ent, Vector3 pos, float buffer)
         {
             if (ent == null || !ent.Exists())
@@ -186,7 +850,7 @@ Debug.WriteLine("After goto");
                 await BaseScript.Delay(200);
             }
         }
-        
+
         public static PedHash GetRandomPed()
         {
             return RandomUtils.GetRandomPed(exclusions);
@@ -194,19 +858,60 @@ Debug.WriteLine("After goto");
 
         public static Vector3 JSONCoordsToVector3(JObject coordsObj)
         {
-            return new Vector3((float)coordsObj["x"], (float)coordsObj["y"], (float)coordsObj["z"]);
+            ////Debug.WriteLine(coordsObj.ToString());
+            Vector3 result = new Vector3((float)coordsObj["x"], (float)coordsObj["y"], (float)coordsObj["z"]);
+            ////Debug.WriteLine(result.ToString());
+            return result;
         }
+
         public static Vector4 JSONCoordsToVector4(JObject coordsObj)
         {
-            return new Vector4((float)coordsObj["x"], (float)coordsObj["y"], (float)coordsObj["z"],
-                (float)coordsObj["w"]);
+            ////Debug.WriteLine("Before x");
+            float x = (float)coordsObj["x"];
+            float y = (float)coordsObj["y"];
+            float z = (float)coordsObj["z"];
+            float w = (float)coordsObj["w"];
+            ////Debug.WriteLine("Before return"+w.ToString());
+            return new Vector4(x, y, z, w);
         }
-        
+
         public static void KeepTask(Ped ped)
         {
             if (ped == null || !ped.Exists()) return;
+            ped.IsPersistent = true;
             ped.AlwaysKeepTask = true;
             ped.BlockPermanentEvents = true;
+        }
+
+        public static List<Ped> keepTaskAnimation = new List<Ped>();
+
+        public static async Task KeepTaskPlayAnimation(Ped ped, string animDict, string animSet,
+            AnimationFlags flags = AnimationFlags.Loop)
+        {
+            if (keepTaskAnimation.Contains(ped))
+                await StopKeepTaskPlayAnimation(ped);
+            ped.Task.PlayAnimation(animDict, animSet);
+            keepTaskAnimation.Add(ped);
+            while (keepTaskAnimation.Contains(ped))
+            {
+                if (ped == null || ped.IsDead || ped.IsCuffed) break;
+                
+                if (!API.IsEntityPlayingAnim(ped.Handle, animDict, animSet, 3))
+                {
+                    //Debug.WriteLine(animDict + ", " +animSet);
+                    ped.Task.PlayAnimation(animDict, animSet, 8f, 8f, -1, flags, 1f);
+                }
+                await BaseScript.Delay(1000);
+            }
+        }
+
+        public static async Task StopKeepTaskPlayAnimation(Ped ped)
+        {
+            while (keepTaskAnimation.Contains(ped))
+            {
+                keepTaskAnimation.Remove(ped);
+                await BaseScript.Delay(100);
+            }
         }
 
         public static void UnKeepTask(Ped ped)
@@ -216,99 +921,6 @@ Debug.WriteLine("After goto");
             ped.BlockPermanentEvents = false;
         }
 
-        public static void SendWebhookErrMessage(string message,string innerException)
-        {
-            BaseScript.TriggerServerEvent("DevKiloCalloutHandler::CreateErrorReport", message, innerException);
-        }
-
-        public static JArray FleecaLocations = new JArray()
-        {
-            new JObject()
-            {
-                ["name"] = "ReplaceThis",
-                ["coords"] = new JObject()
-                { 
-                    ["x"] = 151.22694396973,
-                    ["y"] = -1036.7858886719,
-                    ["z"] = 29.339130401611
-                },
-                ["suspect1Pos"] = new JObject()
-                { 
-                    ["x"] = 152.4542388916,
-                    ["y"] = -1040.8637695313,
-                    ["z"] = 29.374210357666,
-                    ["w"] = 32.407669067383 
-                },
-                ["suspect2Pos"] = new JObject()
-                { 
-                    ["x"] = 146.56207275391,
-                    ["y"] = -1038.3604736328,
-                    ["z"] = 29.367946624756,
-                    ["w"] = 268.79797363281 
-                },
-                ["suspect3Pos"] = new JObject()
-                { 
-                    ["x"] = 143.92475891113,
-                    ["y"] = -1042.2863769531,
-                    ["z"] = 29.367971420288,
-                    ["w"] = 340.05996704102 
-                },
-                ["suspect4Pos"] = new JObject()
-                { 
-                    ["x"] = 145.72930908203,
-                    ["y"] = -1044.5009765625,
-                    ["z"] = 29.377872467041,
-                    ["w"] = 236.51379394531 
-                },
-                ["hostage1Pos"] = new JObject()
-                { 
-                    ["x"] = 151.2699432373,
-                    ["y"] = -1039.2730712891,
-                    ["z"] = 29.377555847168,
-                    ["w"] = 341.34036254883 
-                },
-                ["hostage2Pos"] = new JObject()
-                { 
-                    ["x"] = 149.86596679688,
-                    ["y"] = -1038.5411376953,
-                    ["z"] = 29.377880096436,
-                    ["w"] = 337.91201782227 
-                },
-                ["vaultDoorPos"] = new JObject()
-                { 
-                    ["x"] = 147.62257385254,
-                    ["y"] = -1044.4913330078,
-                    ["z"] = 29.368091583252 
-                },
-                ["vaultDoorExplosionPos"] = new JObject()
-                { 
-                    ["x"] = 148.37721252441,
-                    ["y"] = -1045.5529785156,
-                    ["z"] = 29.346343994141 
-                },
-                ["moneyCart1Pos"] = new JObject()
-                { 
-                    ["x"] = 148.41299438477,
-                    ["y"] = -1050.3021240234,
-                    ["z"] = 29.340667724609,
-                    ["w"] = 248.48597717285 
-                },
-                ["moneyCart2Pos"] = new JObject()
-                { 
-                    ["x"] = 150.23678588867,
-                    ["y"] = -1048.8026123047,
-                    ["z"] = 29.346458435059,
-                    ["w"] = 236.41622924805 
-                },
-                ["suspectVehiclePos"] = new JObject()
-                { 
-                    ["x"] = 157.36538696289,
-                    ["y"] = -1037.5871582031,
-                    ["z"] = 29.219705581665,
-                    ["w"] = 344.15447998047 
-                }
-            }
-        };
         public static Vector3[] ConvenienceLocations = new Vector3[]
         {
             new(-712.12f, -913.06f, 19.22f),
@@ -317,6 +929,7 @@ Debug.WriteLine("After goto");
             new(376.4f, 325.75f, 103.57f),
             new(-1223.94f, -906.52f, 12.33f)
         };
+
         public static Vector3[] HomeLocations = new Vector3[]
         {
             new(-120.15f, -1574.39f, 34.18f),
@@ -414,11 +1027,12 @@ Debug.WriteLine("After goto");
             VehicleClass.Vans,
             VehicleClass.SUVs
         };
-        
+
         public static PedHash GetRandomSuspect()
         {
             return suspects[new Random().Next(suspects.Length - 1)];
         }
+
         public static WeaponHash GetRandomWeapon()
         {
             int index = new Random().Next(weapons.Length);
@@ -547,8 +1161,15 @@ Debug.WriteLine("After goto");
             PedHash.Ranger01SFY,
             PedHash.Ranger01SMY,
             PedHash.RsRanger01AMO,
-            PedHash.Zombie01
+            PedHash.Zombie01,
+            PedHash.Corpse01,
+            PedHash.Corpse02,
+            PedHash.Stripper01Cutscene,
+            PedHash.Stripper02Cutscene,
+            PedHash.StripperLite,
+            PedHash.Stripper01SFY,
+            PedHash.Stripper02SFY,
+            PedHash.StripperLiteSFY
         };
-        
     }
 }

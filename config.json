@@ -1,0 +1,9 @@
+﻿{
+  "Keybind": "O",
+  "CancelKeybind": "X",
+  "MinigameEnabled": true,
+  "MinigameCirclesAmount": 6,
+  "MinigameTimelimitInSeconds": 15,
+  "MinigameSuccessSurvivalChance": 80,
+  "MinigameFailSurvivalChance": 0
+}
