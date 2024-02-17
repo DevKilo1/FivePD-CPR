@@ -5,5 +5,8 @@
   "MinigameCirclesAmount": 6,
   "MinigameTimelimitInSeconds": 15,
   "MinigameSuccessSurvivalChance": 80,
-  "MinigameFailSurvivalChance": 0
+  "MinigameFailSurvivalChance": 0,
+  "EnableAmbientAI": true,
+  "CPRCertifiedDialogueWaitTimeInSeconds": 10,
+  "CPRCerifiedChance": 6
 }

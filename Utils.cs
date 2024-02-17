@@ -24,7 +24,8 @@ namespace FivePD_HostageScenarioCallout
     {
         public static JObject config;
         public static string SourceName = Assembly.GetExecutingAssembly().GetName().Name.Replace(".net", "");
-        public static JObject defaultConfig = JObject.Parse("{\"Keybind\": \"O\", \"CancelKeybind\": \"X\", \"MinigameEnabled\": false,\"MinigameCirclesAmount\": 6,\"MinigameTimelimitInSeconds\": 15,\"MinigameSuccessSurvivalChance\": 80,\"MinigameFailSurvivalChance\": 0}");
+
+        public static JObject defaultConfig = JObject.Parse("{\"Keybind\": \"O\",\"CancelKeybind\": \"X\",\"MinigameEnabled\": true,\"MinigameCirclesAmount\": 6,\"MinigameTimelimitInSeconds\": 15,\"MinigameSuccessSurvivalChance\": 80,\"MinigameFailSurvivalChance\": 0,\"EnableAmbientAI\": true,\"CPRCertifiedDialogueWaitTimeInSeconds\": 10,\"CPRCerifiedChance\": 6}");
         public static string kvpPrefix = SourceName + "_";
         public class Config : JObject
         {
@@ -365,14 +366,31 @@ namespace FivePD_HostageScenarioCallout
             return lines;
         }
 
-        public static async Task WaitUntilKeypressed(Control key)
+        public static async Task<bool> WaitUntilKeypressed(Control key, int timeoutAfterDuration = -1)
         {
-            while (true)
+            bool stillWorking = true;
+            bool pressed = false;
+            if (timeoutAfterDuration > -1)
+            {
+                var wait = new Action(async () =>
+                {
+                    await BaseScript.Delay(timeoutAfterDuration);
+                    stillWorking = false;
+                });
+                wait();
+            }
+            
+            while (stillWorking)
             {
                 if (Game.IsControlJustReleased(0, key))
-                    return;
+                {
+                    pressed = true;
+                    return pressed;
+                }
                 await BaseScript.Delay(0);
             }
+
+            return pressed;
         }
 
         public static List<string> Text3DInProgress = new List<string>();
@@ -382,11 +400,24 @@ namespace FivePD_HostageScenarioCallout
             Text3DInProgress.Clear();
         }
 
-        public static void Draw3DText(Vector3 pos, string text, float scaleFactor = 0.5f,
-            int duration = 5000, int red = 255, int green = 255, int blue = 255, int opacity = 150)
+        public static async void Draw3DText(Vector3 pos, string text, float scaleFactor = 0.5f,
+            int duration = 5000, int red = 255, int green = 255, int blue = 255, int opacity = 150, Entity attachTo = null)
         {
-            Text3DInProgress.Add(text);
-            Draw3DTextHandler(pos, scaleFactor, text, duration, red, green, blue, opacity);
+            if (attachTo == null)
+            {
+                Text3DInProgress.Add(text);
+                Draw3DTextHandler(pos, scaleFactor, text, duration, red, green, blue, opacity);    
+            }
+            else
+            {
+                // Pos is offset
+                Debug.WriteLine("Attached to entity");
+                Text3DInProgress.Add(text);
+                Draw3DTextDrawerOnEntity(attachTo, pos, scaleFactor, text, red, green, blue, opacity);
+                await BaseScript.Delay(duration);
+                if (Text3DInProgress.Contains(text))
+                    Text3DInProgress.Remove(text);
+            }
         }
 
         public static async Task Draw3DTextHandler(Vector3 pos, float scaleFactor, string text, int duration,
@@ -398,35 +429,109 @@ namespace FivePD_HostageScenarioCallout
                 Text3DInProgress.Remove(text);
         }
 
+        public static async Task ShowDialogCountdown(string text, int duration = 10000)
+        {
+            string countdownReplace = "[Countdown]";
+            int seconds = duration / 1000;
+            bool stillWorking = true;
+            var wait = new Action(async () =>
+            {
+                await BaseScript.Delay(duration);
+                stillWorking = false;
+            });
+            wait();
+            var wait2 = new Action(async () =>
+            {
+                await Utils.WaitUntilKeypressed(Control.MpTextChatTeam, 20000);
+                stillWorking = false;
+            });
+            wait2();
+            while (stillWorking)
+            {
+                string newText = text.Replace(countdownReplace, "" + seconds + " seconds left");
+                API.BeginTextCommandPrint("STRING");
+                API.AddTextComponentString(newText);
+                API.EndTextCommandPrint(1000, true);
+                seconds -= 1;
+                await BaseScript.Delay(1000);
+            }
+        }
+
+        public static async Task ShowDialog(string text, int duration = 10000, bool showImmediately = false)
+        {
+            API.BeginTextCommandPrint("STRING");
+            API.AddTextComponentString(text);
+            API.EndTextCommandPrint(duration, showImmediately);
+            await BaseScript.Delay(duration);
+        }
+        
+        public static async Task SubtitleChat(Entity entity, string chat, int red = 255, int green = 255, int blue = 255,
+            int opacity = 255)
+        {
+            int time = chat.Length * 150;
+            Utils.Draw3DText(new Vector3(0f,0f, 1f), chat, 0.5f,
+                time,
+                red, green, blue, opacity, entity);
+            await BaseScript.Delay(time);
+        }
+
+        public static void Draw3DTextDrawNonLoop(Vector3 pos, float scaleFactor, string text, int red, int green,
+            int blue, int opacity)
+        {
+            float screenY = 0f;
+            float screenX = 0f;
+            bool result = API.World3dToScreen2d(pos.X, pos.Y, pos.Z, ref screenX, ref screenY);
+            Vector3 p = API.GetGameplayCamCoords();
+            float dist = World.GetDistance(p, pos);
+            float scale = (1 / dist) * 2;
+            float fov = (1 / API.GetGameplayCamFov()) * 100;
+            scale = scale * fov * scaleFactor;
+            if (!result) return;
+            API.SetTextScale(0f, scale);
+            API.SetTextFont(0);
+            API.SetTextProportional(true);
+            API.SetTextColour(red, green, blue, opacity);
+            API.SetTextDropshadow(0, 0, 0, 0, 255);
+            API.SetTextEdge(2, 0, 0, 0, 150);
+            API.SetTextDropShadow();
+            API.SetTextOutline();
+            API.SetTextEntry("STRING");
+            API.SetTextCentre(true);
+            API.AddTextComponentString(text);
+            API.DrawText(screenX, screenY);
+        }
+
+        public static async Task Draw3DTextDrawerOnEntity(Entity ent, Vector3 offset, float scaleFactor, string text,
+            int red, int green,
+            int blue, int opacity)
+        {
+            while (Text3DInProgress.Contains(text))
+            {
+                Vector3 pos = API.GetOffsetFromEntityInWorldCoords(ent.Handle, offset.X, offset.Y, offset.Z);
+                Draw3DTextDrawNonLoop(pos, scaleFactor, text, red, green, blue, opacity);
+                await BaseScript.Delay(0);
+            }
+        }
+
         public static async Task Draw3DTextDrawer(Vector3 pos, float scaleFactor, string text, int red, int green,
             int blue, int opacity)
         {
             while (Text3DInProgress.Contains(text))
             {
-                float screenY = 0f;
-                float screenX = 0f;
-                bool result = API.World3dToScreen2d(pos.X, pos.Y, pos.Z, ref screenX, ref screenY);
-                Vector3 p = API.GetGameplayCamCoords();
-                float dist = World.GetDistance(p, pos);
-                float scale = (1 / dist) * 2;
-                float fov = (1 / API.GetGameplayCamFov()) * 100;
-                scale = scale * fov * scaleFactor;
-                if (!result) return;
-                API.SetTextScale(0f, scale);
-                API.SetTextFont(0);
-                API.SetTextProportional(true);
-                API.SetTextColour(red, green, blue, opacity);
-                API.SetTextDropshadow(0, 0, 0, 0, 255);
-                API.SetTextEdge(2, 0, 0, 0, 150);
-                API.SetTextDropShadow();
-                API.SetTextOutline();
-                API.SetTextEntry("STRING");
-                API.SetTextCentre(true);
-                API.AddTextComponentString(text);
-                API.DrawText(screenX, screenY);
+                Draw3DTextDrawNonLoop(pos, scaleFactor, text, red, green, blue, opacity);
                 await BaseScript.Delay(0);
             }
             
+        }
+
+        public static async Task CaptureEntity(Entity ent)
+        {
+            API.NetworkRequestControlOfEntity(ent.Handle);
+            ent.IsPersistent = true;
+            if (ent.Model.IsPed)
+            {
+                KeepTask((Ped)ent);    
+            }
         }
 
 
@@ -436,7 +541,13 @@ namespace FivePD_HostageScenarioCallout
                 await BaseScript.Delay(bufferms);
         }
 
-        public static Ped GetClosestPed(Vector3 pos, float maxDistance = 20f, bool ignoreVehicles = false, bool ignoreAlive = false)
+        public static async Task WaitUntilVehicleEngine(Vehicle veh, bool state = false)
+        {
+            while (veh.IsEngineRunning != state)
+                await BaseScript.Delay(100);
+        }
+
+        public static Ped GetClosestPed(Vector3 pos, float maxDistance = 20f, bool ignoreVehicles = false, bool findAlive = true, bool findPlayers = false)
         {
             Ped[] allPeds = World.GetAllPeds();
             Ped closest = null;
@@ -446,7 +557,8 @@ namespace FivePD_HostageScenarioCallout
                 if (p.Position.DistanceTo(pos) > maxDistance) continue;
                 if (ignoreVehicles && p.IsInVehicle()) continue;
                 if (p.NetworkId == Game.PlayerPed.NetworkId) continue;
-                if (ignoreAlive && !p.IsDead) continue;
+                if (!findAlive != p.IsDead) continue;
+                if (findPlayers != p.IsPlayer) continue;
                 if (closest == null)
                     closest = p;
                 if (p.Position.DistanceTo(pos) < closest.Position.DistanceTo(pos))
@@ -811,6 +923,14 @@ namespace FivePD_HostageScenarioCallout
             }
         }
 
+        public static async Task WaitUntilPedIsNotInVehicle(Ped ped, Vehicle veh = null)
+        {
+            if (!ped.IsInVehicle()) return;
+            Vehicle targetVeh = veh != null ? veh : ped.CurrentVehicle;
+            while (ped.IsInVehicle(targetVeh))
+                await BaseScript.Delay(100);
+        }
+
         public static async Task SetIntoVehicleAfterTimer(Ped ped, Vehicle veh, VehicleSeat targetSeat, int ms)
         {
             await BaseScript.Delay(ms);
@@ -820,7 +940,53 @@ namespace FivePD_HostageScenarioCallout
             }
         }
 
-        public static async Task KeepTaskGoToForPed(Ped ped, Vector3 pos, float buffer)
+        public static async Task TaskVehiclePark(Ped ped, Vehicle vehicle, Vector3 pos, float radius, bool keepEngineRunning = false, int timeoutAfterDuration = 30000)
+        {
+            pos = pos.Around(5f);
+            bool stillWorking = true;
+            var wait = new Action(async () =>
+            {
+                while (true)
+                {
+                    if (!vehicle.IsEngineRunning)
+                    {
+                        stillWorking = false;
+                        return;
+                    }
+                    if (!ped.IsInVehicle())
+                    {
+                        stillWorking = false;
+                        return;
+                    }
+                    await BaseScript.Delay(100);
+                }
+            });
+            wait();
+            if (!stillWorking) return;
+            API.TaskVehiclePark(ped.Handle, vehicle.Handle, pos.X, pos.Y,
+                pos.Z, vehicle.Heading, 1, 40f, false);
+            await BaseScript.Delay(30000);
+            if (!stillWorking) return;
+            if (!vehicle.IsEngineRunning)
+            {
+                API.TaskVehiclePark(ped.Handle, vehicle.Handle, pos.X, pos.Y,
+                    pos.Z, vehicle.Heading, 1, 40f, false);
+                await BaseScript.Delay(30000);
+                if (!stillWorking) return;
+                if (!vehicle.IsEngineRunning)
+                {
+                    ped.Task.ClearAll();
+                    vehicle.IsEngineRunning = false;
+                }
+            }
+        }
+
+        public enum GoToType
+        {
+            Run,
+            Walk
+        }
+        public static async Task KeepTaskGoToForPed(Ped ped, Vector3 pos, float buffer = 2f, GoToType type = GoToType.Walk)
         {
             Vector3 startPos = ped.Position;
             while (true)
@@ -828,8 +994,27 @@ namespace FivePD_HostageScenarioCallout
                 await BaseScript.Delay(1000);
                 if (ped.Position == startPos)
                 {
-                    ped.Task.GoTo(pos);
+                    switch (type)
+                    {
+                        case GoToType.Walk:
+                        {
+                            ped.Task.GoTo(pos);
+                            break;
+                        }
+                        case GoToType.Run:
+                        {
+                            ped.Task.RunTo(pos);
+                            break;
+                        }
+                        default:
+                        {
+                            ped.Task.GoTo(pos);
+                            break;
+                        }
+                    }
                 }
+                
+                
 
                 if (ped.Position.DistanceTo(pos) < buffer)
                     return;
@@ -837,16 +1022,34 @@ namespace FivePD_HostageScenarioCallout
             }
         }
 
-        public static async Task WaitUntilEntityIsAtPos(Entity ent, Vector3 pos, float buffer)
+        public static async Task WaitUntilEntityIsAtPos(Entity ent, Vector3 pos, float buffer, int timeout = 60000)
         {
             if (ent == null || !ent.Exists())
                 return;
+            bool waitDB = false;
+            bool stillWorking = true;
+            var wait = new Action(async () =>
+            {
+                if (waitDB) return;
+                waitDB = true;
+                await BaseScript.Delay(60000);
+                if (!stillWorking) return;
+                ent.Position = pos;
+                waitDB = false;
+            });
             while (true)
             {
                 if (ent == null || !ent.Exists())
+                {
+                    stillWorking = false;
                     return;
+                }
                 if (ent.Position.DistanceTo(pos) < buffer)
-                    break;
+                {
+                    stillWorking = false;
+                    return;
+                }
+                wait();
                 await BaseScript.Delay(200);
             }
         }

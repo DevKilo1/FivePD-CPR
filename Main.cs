@@ -5,8 +5,10 @@ using System.Reflection;
 using System.Threading.Tasks;
 using CitizenFX.Core;
 using CitizenFX.Core.Native;
+using CPR;
 using FivePD_HostageScenarioCallout;
 using FivePD.API;
+using FivePD.API.Utils;
 using Newtonsoft.Json.Linq;
 
 namespace FivePD_CPR;
@@ -20,6 +22,12 @@ public class plugin : Plugin
     public static Ped targetPed;
     public static bool cancel = false;
     public static bool early = false;
+    public static MedUtils.CPR activeCPR;
+
+    private Dictionary<int, Vector3>
+        coveredAreas = new Dictionary<int, Vector3>(); // netId, location (radius of coveredAreaRadius)
+
+    private float coveredAreaRadius = 50f;
 
     public static async Task CPRHandler(Ped ped)
     {
@@ -35,7 +43,7 @@ public class plugin : Plugin
         try
         {
             busy = true;
-            
+
             API.NetworkRequestControlOfEntity(ped.Handle);
             Game.PlayerPed.Task.ClearAll();
             if (cancel)
@@ -141,6 +149,7 @@ public class plugin : Plugin
 
                     await Delay(100);
                 }
+
                 if (cancel)
                 {
                     Cleanup(ped);
@@ -245,6 +254,291 @@ public class plugin : Plugin
         Utils.RequestAnimDict("mini@cpr@char_b@cpr_str");
         Utils.RequestAnimDict("mini@cpr@char_a@cpr_str");
         Debug.WriteLine("^2Loaded FivePD CPR Script 1.0 by DevKilo!");
+
+        HandleLoops();
+
+        EventHandlers["KiloCPR:NewAreaControl"] += NewAreaControlHandler;
+    }
+
+    private void NewAreaControlHandler(int ownerNetId, float x, float y, float z)
+    {
+        Vector3 pos = new Vector3(x, y, z);
+        if (coveredAreas.ContainsKey(ownerNetId))
+        {
+            coveredAreas.Remove(ownerNetId);
+        }
+
+        coveredAreas.Add(ownerNetId, pos);
+    }
+
+    private bool ambientAIEnabled = true;
+
+    private bool RequestArea(Vector3 pos)
+    {
+        // Check if it is free
+        bool isFree = true;
+        foreach (var keyValuePair in coveredAreas)
+        {
+            var netId = keyValuePair.Key;
+            var coords = keyValuePair.Value;
+            if (pos.DistanceTo(coords) <= coveredAreaRadius)
+            {
+                if (netId != Game.PlayerPed.NetworkId)
+                    isFree = false;
+            }
+        }
+
+        return isFree;
+    }
+
+    private async Task HandleLoops()
+    {
+        // Ambient AI Check
+        bool enableAmbientAI = false;
+        if ((bool)config["EnableAmbientAI"] != null)
+        {
+            enableAmbientAI = (bool)config["EnableAmbientAI"];
+        }
+
+        int CPRCertifiedDialogueWaitTimeInSeconds = 0;
+        if (config["CPRCertifiedDialogueWaitTimeInSeconds"] != null)
+            CPRCertifiedDialogueWaitTimeInSeconds = (int)config["CPRCertifiedDialogueWaitTimeInSeconds"];
+
+        Tick += async () =>
+        {
+            if (!ambientAIEnabled) return;
+            if (!enableAmbientAI) return;
+            try
+            {
+                if (!RequestArea(Game.PlayerPed.Position)) return;
+                TriggerServerEvent("KiloCPR:Server:NewAreaControl", Game.PlayerPed.NetworkId, Game.PlayerPed.Position.X,
+                    Game.PlayerPed.Position.Y, Game.PlayerPed.Position.Z);
+                await BaseScript.Delay(1000);
+                Ped findDeadPed = Utils.GetClosestPed(Game.PlayerPed.Position, coveredAreaRadius, true, false);
+                if (findDeadPed == null) return;
+                if (MedUtils.CPRPeds.Contains(findDeadPed)) return;
+                Debug.WriteLine("Got dead ped");
+                // Find passerby
+                Ped passerBy = Utils.GetClosestPed(findDeadPed.Position, 20f);
+                if (passerBy == null) return;
+                Debug.WriteLine("Got passer by");
+                int certifiedChance = 80;
+                if (config["CPRCerifiedChance"] != null)
+                    certifiedChance = (int)config["CPRCerifiedChance"];
+                int random = new Random().Next(1, 100);
+                if ((certifiedChance - random) < 0) return;
+                Debug.WriteLine("Doing CPR thing");
+                // CPR Certified
+                ambientAIEnabled = false;
+                if (passerBy.IsInVehicle())
+                {
+                    // Park and get out of vehicle
+                    Utils.CaptureEntity(passerBy);
+                    var vehicle = passerBy.CurrentVehicle;
+                    Utils.CaptureEntity(vehicle);
+                    passerBy.Task.ClearAll();
+                    Utils.TaskVehiclePark(passerBy, vehicle, findDeadPed.Position, 40f);
+                    // Wait until engine off
+                    await Utils.WaitUntilVehicleEngine(vehicle);
+                    Debug.WriteLine("Engine is now off");
+                    // Get out
+                    passerBy.Task.LeaveVehicle();
+                    await Utils.WaitUntilPedIsNotInVehicle(passerBy);
+                    Debug.WriteLine("Ped is out of car");
+                    // Run to body
+                    passerBy.Task.RunTo(findDeadPed.Position);
+                    Utils.KeepTaskGoToForPed(passerBy, findDeadPed.Position, 5f, Utils.GoToType.Run);
+                    await Utils.WaitUntilEntityIsAtPos(passerBy, findDeadPed.Position, 5f);
+                    // Check if player is nearby again
+                    if (Game.PlayerPed.Position.DistanceTo(passerBy.Position) < 10f)
+                    {
+                        // Go to player and ask for permission
+                        passerBy.Task.GoTo(findDeadPed.Position);
+                        Utils.KeepTaskGoToForPed(passerBy, Game.PlayerPed.Position, 3f, Utils.GoToType.Walk);
+                        await Utils.WaitUntilEntityIsAtPos(passerBy, Game.PlayerPed.Position, 3f);
+                        if (passerBy.Position.DistanceTo(Game.PlayerPed.Position) > 5f)
+                        {
+                            // Just do it anyway 
+                            await SaveAI(passerBy, findDeadPed);
+                            if (vehicle != null && vehicle.Exists())
+                            {
+                                Vector3 targetPos = vehicle.Position.Around(2f);
+                                passerBy.Task.GoTo(targetPos);
+                                Utils.KeepTaskGoToForPed(passerBy, targetPos, 2f, Utils.GoToType.Walk);
+                                await Utils.WaitUntilEntityIsAtPos(passerBy, targetPos, 2f);
+                                Utils.KeepTaskEnterVehicle(passerBy, vehicle, VehicleSeat.Driver);
+                                await Utils.WaitUntilPedIsInVehicle(passerBy, vehicle, VehicleSeat.Driver);
+                                Utils.ReleaseEntity(vehicle);
+                                Utils.ReleaseEntity(passerBy);
+                                passerBy.MarkAsNoLongerNeeded();
+                            }
+                            else
+                            {
+                                Utils.ReleaseEntity(passerBy);
+                                passerBy.MarkAsNoLongerNeeded();
+                            }
+                        }
+                        else
+                        {
+                            // Ask for permission
+                            Utils.SubtitleChat(passerBy, "Officer! I'm CPR certified. I can help that person!", 87,
+                                175, 247);
+                            await BaseScript.Delay(1000);
+                            Utils.ShowDialogCountdown("Press ~r~Y~s~ to tell them no. ([Countdown])",
+                                CPRCertifiedDialogueWaitTimeInSeconds);
+                            bool pressed = await Utils.WaitUntilKeypressed(Control.MpTextChatTeam,
+                                CPRCertifiedDialogueWaitTimeInSeconds);
+                            if (!pressed)
+                            {
+                                // Do it anyway
+                                await SaveAI(passerBy, findDeadPed);
+                            }
+                            else
+                            {
+                                // Walk away
+                                if (vehicle != null && vehicle.Exists())
+                                {
+                                    Vector3 targetPos = vehicle.Position.Around(2f);
+                                    passerBy.Task.GoTo(targetPos);
+                                    Utils.KeepTaskGoToForPed(passerBy, targetPos, 2f, Utils.GoToType.Walk);
+                                    await Utils.WaitUntilEntityIsAtPos(passerBy, targetPos, 2f);
+                                    Utils.KeepTaskEnterVehicle(passerBy, vehicle, VehicleSeat.Driver);
+                                    await Utils.WaitUntilPedIsInVehicle(passerBy, vehicle, VehicleSeat.Driver);
+                                    Utils.ReleaseEntity(vehicle);
+                                    Utils.ReleaseEntity(passerBy);
+                                    passerBy.MarkAsNoLongerNeeded();
+                                }
+                                else
+                                {
+                                    Utils.ReleaseEntity(passerBy);
+                                    passerBy.MarkAsNoLongerNeeded();
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Just do it
+                        await SaveAI(passerBy, findDeadPed);
+                        if (vehicle != null && vehicle.Exists())
+                        {
+                            Vector3 targetPos = vehicle.Position.Around(2f);
+                            passerBy.Task.GoTo(targetPos);
+                            Utils.KeepTaskGoToForPed(passerBy, targetPos, 2f, Utils.GoToType.Walk);
+                            await Utils.WaitUntilEntityIsAtPos(passerBy, targetPos, 2f);
+                            Utils.KeepTaskEnterVehicle(passerBy, vehicle, VehicleSeat.Driver);
+                            await Utils.WaitUntilPedIsInVehicle(passerBy, vehicle, VehicleSeat.Driver);
+                            Utils.ReleaseEntity(vehicle);
+                            Utils.ReleaseEntity(passerBy);
+                            passerBy.MarkAsNoLongerNeeded();
+                        }
+                        else
+                        {
+                            Utils.ReleaseEntity(passerBy);
+                            passerBy.MarkAsNoLongerNeeded();
+                        }
+                    }
+                }
+                else
+                {
+                    await Utils.CaptureEntity(passerBy);
+                    passerBy.Task.ClearAll();
+                    Debug.WriteLine("On foot");
+                    // Run to body
+                    passerBy.Task.RunTo(findDeadPed.Position);
+                    Utils.KeepTaskGoToForPed(passerBy, findDeadPed.Position, 5f, Utils.GoToType.Run);
+                    await Utils.WaitUntilEntityIsAtPos(passerBy, findDeadPed.Position, 5f);
+                    // Check if player is nearby again
+                    if (Game.PlayerPed.Position.DistanceTo(passerBy.Position) < 10f)
+                    {
+                        // Go to player and ask for permission
+                        passerBy.Task.RunTo(Game.PlayerPed.Position);
+                        Utils.KeepTaskGoToForPed(passerBy, Game.PlayerPed.Position, 3f, Utils.GoToType.Run);
+                        await Utils.WaitUntilEntityIsAtPos(passerBy, Game.PlayerPed.Position, 3f);
+                        if (passerBy.Position.DistanceTo(Game.PlayerPed.Position) > 5f)
+                        {
+                            // Just do it anyway 
+                            await SaveAI(passerBy, findDeadPed);
+                            findDeadPed.Task.WanderAround();
+                            Utils.ReleaseEntity(findDeadPed);
+                            findDeadPed.MarkAsNoLongerNeeded();
+                            passerBy.Task.WanderAround();
+                            Utils.ReleaseEntity(passerBy);
+                            passerBy.MarkAsNoLongerNeeded();
+                        }
+                        else
+                        {
+                            // Ask for permission
+                            await Utils.SubtitleChat(passerBy, "Officer! I'm CPR certified. I can help that person!",
+                                87,
+                                175, 247);
+                            Utils.ShowDialogCountdown("Press ~r~Y~s~ to tell them no. ([Countdown])",
+                                CPRCertifiedDialogueWaitTimeInSeconds);
+                            //Utils.ShowDialog("Press ~r~Y~s~ to tell them no. ([Countdown])");
+                            //Utils.ShowDialog("Press ~r~Y~s~ to tell them no. (20 seconds)");
+                            bool pressed = await Utils.WaitUntilKeypressed(Control.MpTextChatTeam,
+                                CPRCertifiedDialogueWaitTimeInSeconds);
+                            if (!pressed)
+                            {
+                                // Do it anyway
+                                await SaveAI(passerBy, findDeadPed);
+                                findDeadPed.Task.WanderAround();
+                                Utils.ReleaseEntity(findDeadPed);
+                                findDeadPed.MarkAsNoLongerNeeded();
+                                passerBy.Task.WanderAround();
+                                Utils.ReleaseEntity(passerBy);
+                                passerBy.MarkAsNoLongerNeeded();
+                            }
+                            else
+                            {
+                                // Walk away
+                                findDeadPed.Task.WanderAround();
+                                Utils.ReleaseEntity(findDeadPed);
+                                findDeadPed.MarkAsNoLongerNeeded();
+                                passerBy.Task.WanderAround();
+                                Utils.ReleaseEntity(passerBy);
+                                passerBy.MarkAsNoLongerNeeded();
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Just do it
+                        await SaveAI(passerBy, findDeadPed);
+                        findDeadPed.Task.WanderAround();
+                        Utils.ReleaseEntity(findDeadPed);
+                        findDeadPed.MarkAsNoLongerNeeded();
+                        passerBy.Task.WanderAround();
+                        Utils.ReleaseEntity(passerBy);
+                        passerBy.MarkAsNoLongerNeeded();
+                    }
+                }
+
+                ambientAIEnabled = true;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"^1Error in Tick execution for ambient AI: {ex.Message}");
+                ambientAIEnabled = true;
+            }
+        };
+    }
+
+    private async Task WaitForEitherKeypress(Control ctrl1, Control ctrl2)
+    {
+    }
+
+    private async Task SaveAI(Ped passerBy, Ped findDeadPed)
+    {
+        Debug.WriteLine("Starting SaveAI");
+        passerBy.Task.RunTo(findDeadPed.Position);
+        Utils.KeepTaskGoToForPed(passerBy, findDeadPed.Position, 1f, Utils.GoToType.Walk);
+        await Utils.WaitUntilEntityIsAtPos(passerBy, findDeadPed.Position, 1f);
+
+        await BaseScript.Delay(2000);
+        await Utils.SubtitleChat(passerBy, "I will save you!", 87, 175, 247);
+        MedUtils.CPR cpr = new MedUtils.CPR(findDeadPed);
+        await cpr.Start(passerBy);
     }
 }
 
@@ -252,20 +546,23 @@ public class Main : BaseScript
 {
     public Main()
     {
-        
         plugin.eventHandlers = EventHandlers;
         plugin.exports = Exports;
         API.RegisterCommand("performCPR", new Action<int, List<object>, string>((source, args, rawCommand) =>
         {
             //Debug.WriteLine("Running performCPR");
-            plugin.targetPed = Utils.GetClosestPed(Game.PlayerPed.Position, 2f, true, true);
+            plugin.targetPed = Utils.GetClosestPed(Game.PlayerPed.Position, 2f, true, false);
             if (plugin.targetPed == null)
             {
                 Debug.WriteLine("Failed to fetch closest ped!");
                 return;
             }
 
-            plugin.CPRHandler(plugin.targetPed);
+            Ped closestPed = Utils.GetClosestPed(Game.PlayerPed.Position, 20f, true, true);
+            plugin.activeCPR = new MedUtils.CPR(plugin.targetPed);
+            plugin.activeCPR.Start();
+
+            //plugin.CPRHandler(plugin.targetPed);
         }), false);
 
         string keybind = (string)plugin.config["Keybind"] != ";" ? (string)plugin.config["Keybind"] : ";";
@@ -284,16 +581,22 @@ public class Main : BaseScript
             API.RegisterCommand("cancelCPR", new Action<int, List<object>, string>((source, args, rawCommand) =>
             {
                 //Debug.WriteLine("Running performCPR");
-                plugin.Cleanup(plugin.targetPed);
-                plugin.cancel = true;
+                if (plugin.activeCPR == null) return;
+                if (plugin.activeCPR.plr.Handle != Game.PlayerPed.Handle)
+                {
+                    plugin.activeCPR.OnCancel();
+                    //plugin.Cleanup(plugin.targetPed);
+                    plugin.cancel = true;
+                }
             }), false);
-            string keybind2 = (string)plugin.config["CancelKeybind"] != "X" ? (string)plugin.config["CancelKeybind"] : "X";
-            API.RegisterKeyMapping("cancelCPR", "[FivePD] Cancel CPR","keyboard",keybind2);
+            string keybind2 = (string)plugin.config["CancelKeybind"] != "X"
+                ? (string)plugin.config["CancelKeybind"]
+                : "X";
+            API.RegisterKeyMapping("cancelCPR", "[FivePD] Cancel CPR", "keyboard", keybind2);
         }
         catch (Exception ex)
         {
             Debug.WriteLine("This keybind is unsupported! The default is 'O'");
         }
-        
     }
 }
