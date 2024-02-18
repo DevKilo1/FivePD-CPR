@@ -17,13 +17,16 @@ public class MedUtils
         public Ped ped;
         public Ped plr = Game.PlayerPed;
         private bool early = true;
-        private bool active = true;
+        public bool active = true;
         private bool isAmbientCPR = false;
         int survivalChance = 80;
         private JObject config;
         private EventHandlerDictionary eventHandlers = plugin.eventHandlers;
-        public CPR(Ped p, bool ambient = false)
+        private int netId;
+        public CPR(Ped p, int netId, bool ambient = false)
         {
+            this.netId = netId;
+            if (Game.PlayerPed.NetworkId != netId) return;
             ped = p;
             isAmbientCPR = ambient;
             if (CPRPeds.Contains(p)) throw new Exception("The target ped is busy");
@@ -35,6 +38,7 @@ public class MedUtils
         
         public async Task Start(Ped p = null)
         {
+            if (Game.PlayerPed.NetworkId != netId) return;
             while (ped == null || config == null)
                 await BaseScript.Delay(100);
             if (p != null)
@@ -56,21 +60,40 @@ public class MedUtils
                 active = false;
                 Debug.WriteLine("Error in CPRHandler! " + ex.Message);
                 Debug.WriteLine(ex.ToString());
-                Utils.ShowNotification("Error with CPR! " + ex.Message);
+                if (!isAmbientCPR)
+                    Utils.ShowNotification("Error with CPR! " + ex.Message);
                 return;
             }
         }
 
         private async Task CPR_Intro()
         {
-            Utils.ShowNotification("Starting CPR");
+            if (Game.PlayerPed.NetworkId != netId) return;
+            
+            if (!isAmbientCPR)
+                Utils.ShowNotification("Starting CPR");
             // Intro
-            //Debug.WriteLine("Playing intro");
-            API.TaskPlayAnim(ped.Handle, "mini@cpr@char_b@cpr_def", "cpr_intro", 2.0f, 2.0f, 15000, 2, 0, true, true,
-                true);
-            API.TaskPlayAnim(plr.Handle, "mini@cpr@char_a@cpr_def", "cpr_intro", 2.0f, 2.0f, 15000, 2, 0,
+            
+            /*int sceneId = API.NetworkCreateSynchronisedScene(ped.Position.X, ped.Position.Y, ped.Position.Z - 1f,
+                ped.Rotation.X, ped.Rotation.Y, ped.Rotation.Z, 2, false, true, -1f, 0f, 1f);
+            API.NetworkAddPedToSynchronisedScene(plr.Handle, sceneId, "mini@cpr@char_a@cpr_def", "cpr_intro", 2f, 2f,
+                15000, 2, 0f, 0);
+            API.NetworkAddEntityToSynchronisedScene(ped.Handle, sceneId, "mini@cpr@char_b@cpr_def", "cpr_intro", 1f, 1f,
+                0);*/
+            /*API.NetworkAddPedToSynchronisedScene(ped.Handle, sceneId, "mini@cpr@char_b@cpr_def", "cpr_intro", 2f, 2f,
+                15000, 2, 0f, 0);*/
+            
+            ped.Task.PlayAnimation("mini@cpr@char_b@cpr_def", "cpr_intro", 2f, 2f, 15000, AnimationFlags.Loop, 1f);
+            Utils.KeepTaskPlayAnimation(ped, "mini@cpr@char_b@cpr_def", "cpr_intro", AnimationFlags.Loop);
+            /*API.TaskPlayAnim(ped.Handle, "mini@cpr@char_b@cpr_def", "cpr_intro", 2.0f, 2.0f, 15000, 2, 0, true, true,
+                true);*/
+            plr.Task.PlayAnimation("mini@cpr@char_a@cpr_def", "cpr_intro", 2f, 2f, 15000, AnimationFlags.Loop, 1f);
+            Utils.KeepTaskPlayAnimation(plr, "mini@cpr@char_a@cpr_def", "cpr_intro", AnimationFlags.Loop);
+            /*API.TaskPlayAnim(plr.Handle, "mini@cpr@char_a@cpr_def", "cpr_intro", 2.0f, 2.0f, 15000, 2, 0,
                 true,
-                true, true);
+                true, true);*/
+            //API.NetworkStartSynchronisedScene(sceneId);
+            
             if (!active)
             {
                 OnCancel();
@@ -78,6 +101,9 @@ public class MedUtils
             }
 
             await BaseScript.Delay(15000);
+            Utils.StopKeepTaskPlayAnimation(ped);
+            Utils.StopKeepTaskPlayAnimation(plr);
+            //API.NetworkStopSynchronisedScene(sceneId);
             if (!active)
             {
                 OnCancel();
@@ -87,6 +113,7 @@ public class MedUtils
 
         private async Task CPR_Finish()
         {
+            if (Game.PlayerPed.NetworkId != netId) return;
             int random = new Random().Next(1, 100);
             //Debug.WriteLine(random.ToString());
             //Debug.WriteLine(survivalChance.ToString());
@@ -96,33 +123,56 @@ public class MedUtils
             {
                 // Success
                 //Debug.WriteLine("Success");
-                Utils.ShowNotification("CPR Success!");
+                if (!isAmbientCPR)
+                    Utils.ShowNotification("CPR Success!");
                 ped.Task.ClearAll();
                 plr.Task.ClearAll();
-                API.TaskPlayAnim(ped.Handle, "mini@cpr@char_b@cpr_str", "cpr_success", 2.0f, 2.0f, 26000, 0, 0, true,
+                Utils.StopKeepTaskPlayAnimation(ped);
+                Utils.StopKeepTaskPlayAnimation(plr);
+                
+                ped.Task.PlayAnimation("mini@cpr@char_b@cpr_str", "cpr_success", 2f, 2f, 26000, AnimationFlags.Loop,
+                    1f);
+                Utils.KeepTaskPlayAnimation(ped, "mini@cpr@char_b@cpr_str", "cpr_success", AnimationFlags.Loop);
+                /*API.TaskPlayAnim(ped.Handle, "mini@cpr@char_b@cpr_str", "cpr_success", 2.0f, 2.0f, 26000, 0, 0, true,
                     true,
                     true);
                 API.TaskPlayAnim(plr.Handle, "mini@cpr@char_a@cpr_str", "cpr_success", 2.0f, 2.0f, 26000, 0,
                     0,
                     true,
-                    true, true);
+                    true, true);*/
+                plr.Task.PlayAnimation("mini@cpr@char_a@cpr_str", "cpr_success", 2f, 2f, 26000, AnimationFlags.Loop,
+                    1f);
+                Utils.KeepTaskPlayAnimation(plr, "mini@cpr@char_a@cpr_str", "cpr_success", AnimationFlags.Loop);
                 await BaseScript.Delay(26000);
+                Utils.StopKeepTaskPlayAnimation(ped);
+                Utils.StopKeepTaskPlayAnimation(plr);
                 early = false;
             }
             else
             {
                 // Failed
                 //Debug.WriteLine("Failed");
-                Utils.ShowNotification("CPR Failed.");
+                if (!isAmbientCPR)
+                    Utils.ShowNotification("CPR Failed.");
                 ped.Task.ClearAll();
                 plr.Task.ClearAll();
+                Utils.StopKeepTaskPlayAnimation(ped);
+                Utils.StopKeepTaskPlayAnimation(plr);
                 //Debug.WriteLine("Failed start");
-                API.TaskPlayAnim(ped.Handle, "mini@cpr@char_b@cpr_str", "cpr_fail", 2.0f, 2.0f, 18000, 0, 0, true, true,
+                ped.Task.PlayAnimation("mini@cpr@char_b@cpr_str", "cpr_fail", 2.0f, 2.0f, 18000, AnimationFlags.Loop,
+                    1f);
+                Utils.KeepTaskPlayAnimation(ped, "mini@cpr@char_b@cpr_str", "cpr_fail", AnimationFlags.Loop);
+                /*API.TaskPlayAnim(ped.Handle, "mini@cpr@char_b@cpr_str", "cpr_fail", 2.0f, 2.0f, 18000, 0, 0, true, true,
                     true);
                 API.TaskPlayAnim(plr.Handle, "mini@cpr@char_a@cpr_str", "cpr_fail", 2.0f, 2.0f, 18000, 0, 0,
                     true,
-                    true, true);
+                    true, true);*/
+                plr.Task.PlayAnimation("mini@cpr@char_a@cpr_str", "cpr_fail", 2.0f, 2.0f, 18000, AnimationFlags.Loop,
+                    1f);
+                Utils.KeepTaskPlayAnimation(plr, "mini@cpr@char_a@cpr_str", "cpr_fail", AnimationFlags.Loop);
                 await BaseScript.Delay(18000);
+                Utils.StopKeepTaskPlayAnimation(ped);
+                Utils.StopKeepTaskPlayAnimation(plr);
                 ped.Kill();
             }
 
@@ -131,12 +181,16 @@ public class MedUtils
 
         private async Task CPR_Pumping()
         {
-            API.TaskPlayAnim(ped.Handle, "mini@cpr@char_b@cpr_str", "cpr_pumpchest", 2.0f, 2.0f, -1, 1, 1, true, true,
+            if (Game.PlayerPed.NetworkId != netId) return;
+            ped.Task.PlayAnimation("mini@cpr@char_b@cpr_str", "cpr_pumpchest", 2.0f, 2.0f, -1, AnimationFlags.Loop, 1f);
+            Utils.KeepTaskPlayAnimation(ped, "mini@cpr@char_b@cpr_str", "cpr_pumpchest", AnimationFlags.Loop);
+            /*API.TaskPlayAnim(ped.Handle, "mini@cpr@char_b@cpr_str", "cpr_pumpchest", 2.0f, 2.0f, -1, 1, 1, true, true,
                 true);
             API.TaskPlayAnim(plr.Handle, "mini@cpr@char_a@cpr_str", "cpr_pumpchest", 2.0f, 2.0f, -1, 1, 1,
                 true,
-                true, true);
-            
+                true, true);*/
+            plr.Task.PlayAnimation("mini@cpr@char_a@cpr_str", "cpr_pumpchest", 2.0f, 2.0f, -1, AnimationFlags.Loop, 1f);
+            Utils.KeepTaskPlayAnimation(plr, "mini@cpr@char_a@cpr_str", "cpr_pumpchest", AnimationFlags.Loop);
             int code = new Random().Next(99, 999999);
             bool stillWaiting = true;
             bool Result = false;
@@ -205,6 +259,7 @@ public class MedUtils
         
         private async Task PrepareCPR()
         {
+            if (Game.PlayerPed.NetworkId != netId) return;
             API.NetworkRequestControlOfEntity(ped.Handle);
             if (plr.Handle != Game.PlayerPed.Handle)
                 API.NetworkRequestControlOfEntity(plr.Handle);
@@ -256,9 +311,13 @@ public class MedUtils
 
         public async Task OnCancel()
         {
+            if (Game.PlayerPed.NetworkId != netId) return;
             if (ped == null) return;
-            if (CPRPeds.Contains(ped)) CPRPeds.Remove(ped);
+            if (ped.IsAlive)
+                if (CPRPeds.Contains(ped)) CPRPeds.Remove(ped);
             if (CPRPeds.Contains(plr)) CPRPeds.Remove(plr);
+            Utils.StopKeepTaskPlayAnimation(ped);
+            Utils.StopKeepTaskPlayAnimation(plr);
             active = false;
             if (early)
                 ped.Kill();
@@ -266,7 +325,9 @@ public class MedUtils
             plr.Task.ClearAll();
             ped.IsPositionFrozen = false;
             ped.Task.ClearAll();
+            ped.Task.WanderAround();
             Utils.ReleaseEntity(ped);
+            ped.MarkAsNoLongerNeeded();
         }
     }
 }

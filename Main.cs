@@ -90,6 +90,7 @@ public class plugin : Plugin
             Utils.ShowNotification("Starting CPR");
             // Intro
             //Debug.WriteLine("Playing intro");
+            
             API.TaskPlayAnim(ped.Handle, "mini@cpr@char_b@cpr_def", "cpr_intro", 2.0f, 2.0f, 15000, 2, 0, true, true,
                 true);
             API.TaskPlayAnim(Game.PlayerPed.Handle, "mini@cpr@char_a@cpr_def", "cpr_intro", 2.0f, 2.0f, 15000, 2, 0,
@@ -258,6 +259,21 @@ public class plugin : Plugin
         HandleLoops();
 
         EventHandlers["KiloCPR:NewAreaControl"] += NewAreaControlHandler;
+        EventHandlers["KiloCPR:SyncAnim"] += SyncAnim;
+    }
+
+    private void SyncAnim(int netId, string animDict, string animSet, int duration)
+    {
+        if (netId == Game.PlayerPed.NetworkId) return;
+        Ped plr = (Ped)Entity.FromNetworkId(netId);
+        if (plr == null)
+        {
+            Debug.WriteLine("^1Null thing"); // Remove after testing
+            return;
+        }
+        API.TaskPlayAnim(plr.Handle, animDict, animSet, 2.0f, 2.0f, duration, 2, 0,
+            true,
+            true, true);
     }
 
     private void NewAreaControlHandler(int ownerNetId, float x, float y, float z)
@@ -302,7 +318,7 @@ public class plugin : Plugin
 
         int CPRCertifiedDialogueWaitTimeInSeconds = 0;
         if (config["CPRCertifiedDialogueWaitTimeInSeconds"] != null)
-            CPRCertifiedDialogueWaitTimeInSeconds = (int)config["CPRCertifiedDialogueWaitTimeInSeconds"];
+            CPRCertifiedDialogueWaitTimeInSeconds = (int)config["CPRCertifiedDialogueWaitTimeInSeconds"] * 1000;
 
         Tick += async () =>
         {
@@ -317,21 +333,26 @@ public class plugin : Plugin
                 Ped findDeadPed = Utils.GetClosestPed(Game.PlayerPed.Position, coveredAreaRadius, true, false);
                 if (findDeadPed == null) return;
                 if (MedUtils.CPRPeds.Contains(findDeadPed)) return;
-                Debug.WriteLine("Got dead ped");
                 // Find passerby
                 Ped passerBy = Utils.GetClosestPed(findDeadPed.Position, 20f);
                 if (passerBy == null) return;
-                Debug.WriteLine("Got passer by");
                 int certifiedChance = 80;
                 if (config["CPRCerifiedChance"] != null)
                     certifiedChance = (int)config["CPRCerifiedChance"];
                 int random = new Random().Next(1, 100);
                 if ((certifiedChance - random) < 0) return;
-                Debug.WriteLine("Doing CPR thing");
                 // CPR Certified
                 ambientAIEnabled = false;
                 if (passerBy.IsInVehicle())
                 {
+                    bool AmbientAIEnableVehicles = false;
+                    if (config["AmbientAIEnableVehicles"] != null)
+                        AmbientAIEnableVehicles = (bool)config["AmbientAIEnableVehicles"];
+                    if (!AmbientAIEnableVehicles)
+                    {
+                        ambientAIEnabled = true;
+                        return;
+                    }
                     // Park and get out of vehicle
                     Utils.CaptureEntity(passerBy);
                     var vehicle = passerBy.CurrentVehicle;
@@ -340,11 +361,9 @@ public class plugin : Plugin
                     Utils.TaskVehiclePark(passerBy, vehicle, findDeadPed.Position, 40f);
                     // Wait until engine off
                     await Utils.WaitUntilVehicleEngine(vehicle);
-                    Debug.WriteLine("Engine is now off");
                     // Get out
                     passerBy.Task.LeaveVehicle();
                     await Utils.WaitUntilPedIsNotInVehicle(passerBy);
-                    Debug.WriteLine("Ped is out of car");
                     // Run to body
                     passerBy.Task.RunTo(findDeadPed.Position);
                     Utils.KeepTaskGoToForPed(passerBy, findDeadPed.Position, 5f, Utils.GoToType.Run);
@@ -392,6 +411,23 @@ public class plugin : Plugin
                             {
                                 // Do it anyway
                                 await SaveAI(passerBy, findDeadPed);
+                                if (vehicle != null && vehicle.Exists())
+                                {
+                                    Vector3 targetPos = vehicle.Position.Around(2f);
+                                    passerBy.Task.GoTo(targetPos);
+                                    Utils.KeepTaskGoToForPed(passerBy, targetPos, 2f, Utils.GoToType.Walk);
+                                    await Utils.WaitUntilEntityIsAtPos(passerBy, targetPos, 2f);
+                                    Utils.KeepTaskEnterVehicle(passerBy, vehicle, VehicleSeat.Driver);
+                                    await Utils.WaitUntilPedIsInVehicle(passerBy, vehicle, VehicleSeat.Driver);
+                                    Utils.ReleaseEntity(vehicle);
+                                    Utils.ReleaseEntity(passerBy);
+                                    passerBy.MarkAsNoLongerNeeded();
+                                }
+                                else
+                                {
+                                    Utils.ReleaseEntity(passerBy);
+                                    passerBy.MarkAsNoLongerNeeded();
+                                }
                             }
                             else
                             {
@@ -420,6 +456,12 @@ public class plugin : Plugin
                     {
                         // Just do it
                         await SaveAI(passerBy, findDeadPed);
+                        if (findDeadPed.IsAlive)
+                        {
+                            findDeadPed.Task.WanderAround();
+                            Utils.ReleaseEntity(findDeadPed);
+                            findDeadPed.MarkAsNoLongerNeeded();
+                        }
                         if (vehicle != null && vehicle.Exists())
                         {
                             Vector3 targetPos = vehicle.Position.Around(2f);
@@ -441,9 +483,9 @@ public class plugin : Plugin
                 }
                 else
                 {
+                    
                     await Utils.CaptureEntity(passerBy);
                     passerBy.Task.ClearAll();
-                    Debug.WriteLine("On foot");
                     // Run to body
                     passerBy.Task.RunTo(findDeadPed.Position);
                     Utils.KeepTaskGoToForPed(passerBy, findDeadPed.Position, 5f, Utils.GoToType.Run);
@@ -530,15 +572,34 @@ public class plugin : Plugin
 
     private async Task SaveAI(Ped passerBy, Ped findDeadPed)
     {
-        Debug.WriteLine("Starting SaveAI");
+        if (passerBy.IsDead)
+        {
+            ambientAIEnabled = true;
+            return;
+        }
         passerBy.Task.RunTo(findDeadPed.Position);
         Utils.KeepTaskGoToForPed(passerBy, findDeadPed.Position, 1f, Utils.GoToType.Walk);
         await Utils.WaitUntilEntityIsAtPos(passerBy, findDeadPed.Position, 1f);
 
         await BaseScript.Delay(2000);
+        if (passerBy.IsDead)
+        {
+            ambientAIEnabled = true;
+            return;
+        }
         await Utils.SubtitleChat(passerBy, "I will save you!", 87, 175, 247);
-        MedUtils.CPR cpr = new MedUtils.CPR(findDeadPed);
-        await cpr.Start(passerBy);
+        MedUtils.CPR cpr = new MedUtils.CPR(findDeadPed,Game.PlayerPed.NetworkId);
+        cpr.Start(passerBy);
+        while (cpr.active)
+        {
+            if (passerBy == null || !passerBy.Exists() || passerBy.IsDead)
+            {
+                ambientAIEnabled = true;
+                cpr.OnCancel();
+                return;
+            }
+            await BaseScript.Delay(100);
+        }
     }
 }
 
@@ -559,7 +620,7 @@ public class Main : BaseScript
             }
 
             Ped closestPed = Utils.GetClosestPed(Game.PlayerPed.Position, 20f, true, true);
-            plugin.activeCPR = new MedUtils.CPR(plugin.targetPed);
+            plugin.activeCPR = new MedUtils.CPR(plugin.targetPed, Game.PlayerPed.NetworkId);
             plugin.activeCPR.Start();
 
             //plugin.CPRHandler(plugin.targetPed);

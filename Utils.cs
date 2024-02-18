@@ -25,7 +25,7 @@ namespace FivePD_HostageScenarioCallout
         public static JObject config;
         public static string SourceName = Assembly.GetExecutingAssembly().GetName().Name.Replace(".net", "");
 
-        public static JObject defaultConfig = JObject.Parse("{\"Keybind\": \"O\",\"CancelKeybind\": \"X\",\"MinigameEnabled\": true,\"MinigameCirclesAmount\": 6,\"MinigameTimelimitInSeconds\": 15,\"MinigameSuccessSurvivalChance\": 80,\"MinigameFailSurvivalChance\": 0,\"EnableAmbientAI\": true,\"CPRCertifiedDialogueWaitTimeInSeconds\": 10,\"CPRCerifiedChance\": 6}");
+        public static JObject defaultConfig = JObject.Parse("{\"Keybind\": \"O\",\"CancelKeybind\": \"X\",\"MinigameEnabled\": true,\"MinigameCirclesAmount\": 6,\"MinigameTimelimitInSeconds\": 15,\"MinigameSuccessSurvivalChance\": 80,\"MinigameFailSurvivalChance\": 0,\"EnableAmbientAI\": true,\"CPRCertifiedDialogueWaitTimeInSeconds\": 10,\"CPRCerifiedChance\": 1}");
         public static string kvpPrefix = SourceName + "_";
         public class Config : JObject
         {
@@ -411,7 +411,6 @@ namespace FivePD_HostageScenarioCallout
             else
             {
                 // Pos is offset
-                Debug.WriteLine("Attached to entity");
                 Text3DInProgress.Add(text);
                 Draw3DTextDrawerOnEntity(attachTo, pos, scaleFactor, text, red, green, blue, opacity);
                 await BaseScript.Delay(duration);
@@ -963,22 +962,30 @@ namespace FivePD_HostageScenarioCallout
             });
             wait();
             if (!stillWorking) return;
-            API.TaskVehiclePark(ped.Handle, vehicle.Handle, pos.X, pos.Y,
-                pos.Z, vehicle.Heading, 1, 40f, false);
-            await BaseScript.Delay(30000);
-            if (!stillWorking) return;
-            if (!vehicle.IsEngineRunning)
+            while (stillWorking)
             {
+                pos = pos.Around(5f);
                 API.TaskVehiclePark(ped.Handle, vehicle.Handle, pos.X, pos.Y,
                     pos.Z, vehicle.Heading, 1, 40f, false);
                 await BaseScript.Delay(30000);
-                if (!stillWorking) return;
-                if (!vehicle.IsEngineRunning)
+                if (vehicle.IsEngineRunning)
                 {
-                    ped.Task.ClearAll();
-                    vehicle.IsEngineRunning = false;
+                    pos = pos.Around(5f);
+                    API.TaskVehiclePark(ped.Handle, vehicle.Handle, pos.X, pos.Y,
+                        pos.Z, vehicle.Heading, 1, 40f, false);
+                    await BaseScript.Delay(30000);
+                    if (!stillWorking) return;
+                    if (vehicle.IsEngineRunning)
+                    {
+                        ped.Task.ClearAll();
+                        ped.Task.LeaveVehicle();
+                        vehicle.IsEngineRunning = false;
+                    }
                 }
             }
+            
+            if (!stillWorking) return;
+            
         }
 
         public enum GoToType
