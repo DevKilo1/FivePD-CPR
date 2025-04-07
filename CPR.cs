@@ -82,12 +82,11 @@ public class MedUtils
                 0);*/
             /*API.NetworkAddPedToSynchronisedScene(ped.Handle, sceneId, "mini@cpr@char_b@cpr_def", "cpr_intro", 2f, 2f,
                 15000, 2, 0f, 0);*/
-            
-            ped.Task.PlayAnimation("mini@cpr@char_b@cpr_def", "cpr_intro", 2f, 2f, 15000, AnimationFlags.Loop, 1f);
+            await ped.Task.PlayAnimation("mini@cpr@char_b@cpr_def", "cpr_intro", 2f, 2f, 15000, AnimationFlags.Loop, 1f);
             Utils.KeepTaskPlayAnimation(ped, "mini@cpr@char_b@cpr_def", "cpr_intro", AnimationFlags.Loop);
             /*API.TaskPlayAnim(ped.Handle, "mini@cpr@char_b@cpr_def", "cpr_intro", 2.0f, 2.0f, 15000, 2, 0, true, true,
                 true);*/
-            plr.Task.PlayAnimation("mini@cpr@char_a@cpr_def", "cpr_intro", 2f, 2f, 15000, AnimationFlags.Loop, 1f);
+            await plr.Task.PlayAnimation("mini@cpr@char_a@cpr_def", "cpr_intro", 2f, 2f, 15000, AnimationFlags.Loop, 1f);
             Utils.KeepTaskPlayAnimation(plr, "mini@cpr@char_a@cpr_def", "cpr_intro", AnimationFlags.Loop);
             /*API.TaskPlayAnim(plr.Handle, "mini@cpr@char_a@cpr_def", "cpr_intro", 2.0f, 2.0f, 15000, 2, 0,
                 true,
@@ -100,9 +99,10 @@ public class MedUtils
                 return;
             }
 
-            await BaseScript.Delay(15000);
+            await BaseScript.Delay(12000);
             Utils.StopKeepTaskPlayAnimation(ped);
             Utils.StopKeepTaskPlayAnimation(plr);
+            await BaseScript.Delay(3000);
             //API.NetworkStopSynchronisedScene(sceneId);
             if (!active)
             {
@@ -254,6 +254,8 @@ public class MedUtils
                 }
             }
 
+            Utils.StopKeepTaskPlayAnimation(ped);
+            Utils.StopKeepTaskPlayAnimation(plr);
             await BaseScript.Delay(5000);
         }
         
@@ -291,12 +293,12 @@ public class MedUtils
                 return;
             }
 
-            ped.Task.ClearAllImmediately();
+            ped.Task.ClearAll();
             ped.Position = new Vector3(ped.Position.X, ped.Position.Y, ped.Position.Z + 2f);
             ped.Resurrect();
             ped.Health = ped.MaxHealth;
             ped.IsPositionFrozen = true;
-            ped.Task.ClearAllImmediately();
+            ped.Task.ClearAll();
 
             await BaseScript.Delay(50);
             if (!active)
@@ -307,6 +309,7 @@ public class MedUtils
 
             ped.Position = offset;
             ped.Heading = newHeading;
+            //await BaseScript.Delay(500);
         }
 
         public async Task OnCancel()
